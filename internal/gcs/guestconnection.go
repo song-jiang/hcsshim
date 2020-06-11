@@ -57,7 +57,7 @@ type GuestConnectionConfig struct {
 }
 
 // Connect establishes a GCS connection. `gcc.Conn` will be closed by this function.
-func (gcc *GuestConnectionConfig) Connect(ctx context.Context) (_ *GuestConnection, err error) {
+func (gcc *GuestConnectionConfig) Connect(ctx context.Context, sendHostCreate bool) (_ *GuestConnection, err error) {
 	ctx, span := trace.StartSpan(ctx, "gcs::GuestConnectionConfig::Connect")
 	defer span.End()
 	defer func() { oc.SetSpanStatus(span, err) }()
@@ -73,7 +73,7 @@ func (gcc *GuestConnectionConfig) Connect(ctx context.Context) (_ *GuestConnecti
 		gc.brdg.Wait()
 		gc.clearNotifies()
 	}()
-	err = gc.connect(ctx)
+	err = gc.connect(ctx, sendHostCreate)
 	if err != nil {
 		gc.Close()
 		return nil, err
@@ -105,7 +105,9 @@ func (gc *GuestConnection) Protocol() uint32 {
 }
 
 // connect establishes a GCS connection. It must not be called more than once.
-func (gc *GuestConnection) connect(ctx context.Context) (err error) {
+// sendHostCreate should be set to `true` when connecting to the uvm that is created from
+// scratch. It should be `false` when connecting to the cloned uvm.
+func (gc *GuestConnection) connect(ctx context.Context, sendHostCreate bool) (err error) {
 	req := negotiateProtocolRequest{
 		MinimumVersion: protocolVersion,
 		MaximumVersion: protocolVersion,
@@ -123,7 +125,7 @@ func (gc *GuestConnection) connect(ctx context.Context) (err error) {
 	if gc.os == "" {
 		gc.os = "windows"
 	}
-	if resp.Capabilities.SendHostCreateMessage {
+	if sendHostCreate && resp.Capabilities.SendHostCreateMessage {
 		createReq := containerCreate{
 			requestBase: makeRequest(ctx, nullContainerID),
 			ContainerConfig: anyInString{&uvmConfig{
