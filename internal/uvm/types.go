@@ -113,4 +113,10 @@ type UtilityVM struct {
 	// This is used in generating unique mount path inside UVM for every mount.
 	// Access to this variable should be done atomically.
 	mountCounter uint64
+
+	// specifies if this UVM is created to be saved as a template
+	IsTemplate bool
+
+	// specifies if this UVM is a cloned from a template
+	IsClone bool
 }

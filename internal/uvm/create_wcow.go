@@ -9,6 +9,7 @@ import (
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
 	"github.com/Microsoft/hcsshim/internal/gcs"
+	"github.com/Microsoft/hcsshim/internal/hns"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
 	"github.com/Microsoft/hcsshim/internal/mergemaps"
@@ -26,6 +27,22 @@ type OptionsWCOW struct {
 	*Options
 
 	LayerFolders []string // Set of folders for base layers and scratch. Ordered from top most read-only through base read-only layer, followed by scratch
+
+	// specifies if this UVM will be saved as a template in future. Setting this
+	// option to true will enable some VSMB Options during UVM creation that allow
+	// template creation.
+	IsTemplate bool
+
+	// Specifies if this UVM should be created by cloning a template. If IsClone is
+	// true then a valid UVMTemplateConfig struct must be passed in the
+	// `TemplateConfig` field.
+	IsClone bool
+
+	// This option is only used during clone creation. If a uvm is
+	// being cloned then this TemplateConfig struct must be passed
+	// which holds all the information about the template from
+	// which this clone should be created.
+	TemplateConfig *UVMTemplateConfig
 }
 
 // NewDefaultOptionsWCOW creates the default options for a bootable version of
@@ -41,7 +58,109 @@ func NewDefaultOptionsWCOW(id, owner string) *OptionsWCOW {
 	}
 }
 
+func (uvm *UtilityVM) startExternalGcsListener(ctx context.Context) error {
+	log.G(ctx).WithField("vmID", uvm.runtimeID).Debug("Using external GCS bridge")
+
+	l, err := winio.ListenHvsock(&winio.HvsockAddr{
+		VMID:      uvm.runtimeID,
+		ServiceID: gcs.WindowsGcsHvsockServiceID,
+	})
+	if err != nil {
+		return err
+	}
+	uvm.gcListener = l
+	return nil
+}
+
+func prepareConfigDoc(ctx context.Context, uvm *UtilityVM, opts *OptionsWCOW, uvmFolder string) (*hcsschema.ComputeSystem, error) {
+	processorTopology, err := hostProcessorInfo(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get host processor information: %s", err)
+	}
+
+	// To maintain compatability with Docker we need to automatically downgrade
+	// a user CPU count if the setting is not possible.
+	uvm.processorCount = uvm.normalizeProcessorCount(ctx, opts.ProcessorCount, processorTopology)
+
+	// Align the requested memory size.
+	memorySizeInMB := uvm.normalizeMemorySize(ctx, opts.MemorySizeInMB)
+
+	// UVM rootfs share is readonly.
+	vsmbOpts := uvm.DefaultVSMBOptions(true)
+	vsmbOpts.TakeBackupPrivilege = true
+	virtualSMB := &hcsschema.VirtualSmb{
+		DirectFileMappingInMB: 1024, // Sensible default, but could be a tuning parameter somewhere
+		Shares: []hcsschema.VirtualSmbShare{
+			{
+				Name:    "os",
+				Path:    filepath.Join(uvmFolder, `UtilityVM\Files`),
+				Options: vsmbOpts,
+			},
+		},
+	}
+
+	doc := &hcsschema.ComputeSystem{
+		Owner:                             uvm.owner,
+		SchemaVersion:                     schemaversion.SchemaV21(),
+		ShouldTerminateOnLastHandleClosed: true,
+		VirtualMachine: &hcsschema.VirtualMachine{
+			StopOnReset: true,
+			Chipset: &hcsschema.Chipset{
+				Uefi: &hcsschema.Uefi{
+					BootThis: &hcsschema.UefiBootEntry{
+						DevicePath: `\EFI\Microsoft\Boot\bootmgfw.efi`,
+						DeviceType: "VmbFs",
+					},
+				},
+			},
+			ComputeTopology: &hcsschema.Topology{
+				Memory: &hcsschema.Memory2{
+					SizeInMB:        memorySizeInMB,
+					AllowOvercommit: opts.AllowOvercommit,
+					// EnableHotHint is not compatible with physical.
+					EnableHotHint:        opts.AllowOvercommit,
+					EnableDeferredCommit: opts.EnableDeferredCommit,
+					LowMMIOGapInMB:       opts.LowMMIOGapInMB,
+					HighMMIOBaseInMB:     opts.HighMMIOBaseInMB,
+					HighMMIOGapInMB:      opts.HighMMIOGapInMB,
+				},
+				Processor: &hcsschema.Processor2{
+					Count:  uvm.processorCount,
+					Limit:  opts.ProcessorLimit,
+					Weight: opts.ProcessorWeight,
+				},
+			},
+			Devices: &hcsschema.Devices{
+				HvSocket: &hcsschema.HvSocket2{
+					HvSocketConfig: &hcsschema.HvSocketSystemConfig{
+						// Allow administrators and SYSTEM to bind to vsock sockets
+						// so that we can create a GCS log socket.
+						DefaultBindSecurityDescriptor: "D:P(A;;FA;;;SY)(A;;FA;;;BA)",
+					},
+				},
+				VirtualSmb: virtualSMB,
+			},
+		},
+	}
+
+	if !opts.ExternalGuestConnection {
+		doc.VirtualMachine.GuestConnection = &hcsschema.GuestConnection{}
+	}
+
+	// Handle StorageQoS if set
+	if opts.StorageQoSBandwidthMaximum > 0 || opts.StorageQoSIopsMaximum > 0 {
+		doc.VirtualMachine.StorageQoS = &hcsschema.StorageQoS{
+			IopsMaximum:      opts.StorageQoSIopsMaximum,
+			BandwidthMaximum: opts.StorageQoSBandwidthMaximum,
+		}
+	}
+
+	return doc, nil
+}
+
 // CreateWCOW creates an HCS compute system representing a utility VM.
+// The HCS Compute system can either be created from scratch or can be cloned from a
+// template.
 //
 // WCOW Notes:
 //   - The scratch is always attached to SCSI 0:0
@@ -104,110 +223,70 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 		}
 	}
 
-	// Create sandbox.vhdx in the scratch folder based on the template, granting the correct permissions to it
-	scratchPath := filepath.Join(scratchFolder, "sandbox.vhdx")
-	if _, err := os.Stat(scratchPath); os.IsNotExist(err) {
-		if err := wcow.CreateUVMScratch(ctx, uvmFolder, scratchFolder, uvm.id); err != nil {
-			return nil, fmt.Errorf("failed to create scratch: %s", err)
-		}
-	}
-
-	processorTopology, err := hostProcessorInfo(ctx)
+	doc, err := prepareConfigDoc(ctx, uvm, opts, uvmFolder)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get host processor information: %s", err)
+		return nil, fmt.Errorf("error in preparing config doc: %s", err)
 	}
 
-	// To maintain compatability with Docker we need to automatically downgrade
-	// a user CPU count if the setting is not possible.
-	uvm.processorCount = uvm.normalizeProcessorCount(ctx, opts.ProcessorCount, processorTopology)
-
-	// Align the requested memory size.
-	memorySizeInMB := uvm.normalizeMemorySize(ctx, opts.MemorySizeInMB)
-
-	// UVM rootfs share is readonly.
-	vsmbOpts := uvm.DefaultVSMBOptions(true)
-	vsmbOpts.TakeBackupPrivilege = true
-	virtualSMB := &hcsschema.VirtualSmb{
-		DirectFileMappingInMB: 1024, // Sensible default, but could be a tuning parameter somewhere
-		Shares: []hcsschema.VirtualSmbShare{
-			{
-				Name:    "os",
-				Path:    filepath.Join(uvmFolder, `UtilityVM\Files`),
-				Options: vsmbOpts,
-			},
-		},
-	}
-
-	doc := &hcsschema.ComputeSystem{
-		Owner:                             uvm.owner,
-		SchemaVersion:                     schemaversion.SchemaV21(),
-		ShouldTerminateOnLastHandleClosed: true,
-		VirtualMachine: &hcsschema.VirtualMachine{
-			StopOnReset: true,
-			Chipset: &hcsschema.Chipset{
-				Uefi: &hcsschema.Uefi{
-					BootThis: &hcsschema.UefiBootEntry{
-						DevicePath: `\EFI\Microsoft\Boot\bootmgfw.efi`,
-						DeviceType: "VmbFs",
-					},
-				},
-			},
-			ComputeTopology: &hcsschema.Topology{
-				Memory: &hcsschema.Memory2{
-					SizeInMB:        memorySizeInMB,
-					AllowOvercommit: opts.AllowOvercommit,
-					// EnableHotHint is not compatible with physical.
-					EnableHotHint:        opts.AllowOvercommit,
-					EnableDeferredCommit: opts.EnableDeferredCommit,
-					LowMMIOGapInMB:       opts.LowMMIOGapInMB,
-					HighMMIOBaseInMB:     opts.HighMMIOBaseInMB,
-					HighMMIOGapInMB:      opts.HighMMIOGapInMB,
-				},
-				Processor: &hcsschema.Processor2{
-					Count:  uvm.processorCount,
-					Limit:  opts.ProcessorLimit,
-					Weight: opts.ProcessorWeight,
-				},
-			},
-			Devices: &hcsschema.Devices{
-				Scsi: map[string]hcsschema.Scsi{
-					"0": {
-						Attachments: map[string]hcsschema.Attachment{
-							"0": {
-								Path:  scratchPath,
-								Type_: "VirtualDisk",
-							},
-						},
-					},
-				},
-				HvSocket: &hcsschema.HvSocket2{
-					HvSocketConfig: &hcsschema.HvSocketSystemConfig{
-						// Allow administrators and SYSTEM to bind to vsock sockets
-						// so that we can create a GCS log socket.
-						DefaultBindSecurityDescriptor: "D:P(A;;FA;;;SY)(A;;FA;;;BA)",
-					},
-				},
-				VirtualSmb: virtualSMB,
-			},
-		},
-	}
-
-	if !opts.ExternalGuestConnection {
-		doc.VirtualMachine.GuestConnection = &hcsschema.GuestConnection{}
-	}
-
-	// Handle StorageQoS if set
-	if opts.StorageQoSBandwidthMaximum > 0 || opts.StorageQoSIopsMaximum > 0 {
-		doc.VirtualMachine.StorageQoS = &hcsschema.StorageQoS{
-			IopsMaximum:      opts.StorageQoSIopsMaximum,
-			BandwidthMaximum: opts.StorageQoSBandwidthMaximum,
+	if !opts.IsClone {
+		// Create sandbox.vhdx in the scratch folder based on the template, granting the correct permissions to it
+		scratchPath := filepath.Join(scratchFolder, "sandbox.vhdx")
+		if _, err := os.Stat(scratchPath); os.IsNotExist(err) {
+			if err := wcow.CreateUVMScratch(ctx, uvmFolder, scratchFolder, uvm.id); err != nil {
+				return nil, fmt.Errorf("failed to create scratch: %s", err)
+			}
 		}
+
+		doc.VirtualMachine.Devices.Scsi = map[string]hcsschema.Scsi{
+			"0": {
+				Attachments: map[string]hcsschema.Attachment{
+					"0": {
+						Path:  scratchPath,
+						Type_: "VirtualDisk",
+					},
+				},
+			},
+		}
+
+		uvm.scsiLocations[0][0] = &SCSIMount{
+			vm:       uvm,
+			HostPath: doc.VirtualMachine.Devices.Scsi["0"].Attachments["0"].Path,
+			refCount: 1,
+		}
+	} else {
+		doc.VirtualMachine.RestoreState = &hcsschema.RestoreState{}
+		doc.VirtualMachine.RestoreState.TemplateSystemId = opts.TemplateConfig.UVMID
+
+		for _, cloneableResource := range opts.TemplateConfig.Resources {
+			_, err = cloneableResource.Clone(ctx, uvm, &cloneData{
+				doc:           doc,
+				scratchFolder: scratchFolder,
+				uvmID:         opts.ID,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed while cloning: %s", err)
+			}
+		}
+
+		// we add default clone namespace for each clone. Include it here.
+		if uvm.namespaces == nil {
+			uvm.namespaces = make(map[string]*namespaceInfo)
+		}
+		uvm.namespaces[hns.DEFAULT_CLONE_NETWORK_NAMESPACE_ID] = &namespaceInfo{
+			nics: make(map[string]*nicInfo),
+		}
+
+		uvm.IsClone = true
 	}
 
-	uvm.scsiLocations[0][0] = &SCSIMount{
-		vm:       uvm,
-		HostPath: doc.VirtualMachine.Devices.Scsi["0"].Attachments["0"].Path,
-		refCount: 1,
+	// Add appropriate VSMB share options if this UVM needs to be saved as a template
+	if opts.IsTemplate {
+		for _, share := range doc.VirtualMachine.Devices.VirtualSmb.Shares {
+			share.Options.PseudoDirnotify = true
+			share.Options.NoLocks = true
+			share.Options.NoDirectmap = true
+		}
+		uvm.IsTemplate = true
 	}
 
 	fullDoc, err := mergemaps.MergeJSON(doc, ([]byte)(opts.AdditionHCSDocumentJSON))
@@ -220,16 +299,11 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 		return nil, fmt.Errorf("error while creating the compute system: %s", err)
 	}
 
+	// All clones MUST use external gcs connection
 	if opts.ExternalGuestConnection {
-		log.G(ctx).WithField("vmID", uvm.runtimeID).Debug("Using external GCS bridge")
-		l, err := winio.ListenHvsock(&winio.HvsockAddr{
-			VMID:      uvm.runtimeID,
-			ServiceID: gcs.WindowsGcsHvsockServiceID,
-		})
-		if err != nil {
+		if err = uvm.startExternalGcsListener(ctx); err != nil {
 			return nil, err
 		}
-		uvm.gcListener = l
 	}
 
 	return uvm, nil

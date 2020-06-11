@@ -108,6 +108,9 @@ func verifyOptions(ctx context.Context, options interface{}) error {
 		if len(opts.LayerFolders) < 2 {
 			return errors.New("at least 2 LayerFolders must be supplied")
 		}
+		if opts.IsClone && opts.TemplateConfig == nil {
+			return errors.New("template config can not be nil when creating clone")
+		}
 	}
 	return nil
 }
@@ -188,11 +191,9 @@ func (uvm *UtilityVM) Close() (err error) {
 		uvm.hcsSystem.Terminate(ctx)
 		uvm.Wait()
 	}
-	if uvm.gc != nil {
-		uvm.gc.Close()
-	}
-	if uvm.gcListener != nil {
-		uvm.gcListener.Close()
+
+	if err := uvm.CloseGCSConnection(); err != nil {
+		log.G(ctx).Errorf("close gcs connection failed: %f", err)
 	}
 
 	// outputListener will only be nil for a Create -> Stop without a Start. In
@@ -314,4 +315,16 @@ func (uvm *UtilityVM) normalizeMemorySize(ctx context.Context, requested int32) 
 // should be physically backed
 func (uvm *UtilityVM) DevicesPhysicallyBacked() bool {
 	return uvm.devicesPhysicallyBacked
+}
+
+// Closes the external GCS connection if it is being used and also closes the
+// listener for GCS connection.
+func (uvm *UtilityVM) CloseGCSConnection() (err error) {
+	if uvm.gc != nil {
+		err = uvm.gc.Close()
+	}
+	if err != nil && uvm.gcListener != nil {
+		err = uvm.gcListener.Close()
+	}
+	return
 }
