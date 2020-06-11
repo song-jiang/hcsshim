@@ -425,7 +425,10 @@ func (sm *SCSIMount) Clone(ctx context.Context, vm *UtilityVM, cd *CloneData) (i
 		}
 	}
 
-	cd.doc.VirtualMachine.Devices.Scsi[conStr].Attachments[lunStr] = hcsschema.Attachment{}
+	cd.doc.VirtualMachine.Devices.Scsi[conStr].Attachments[lunStr] = hcsschema.Attachment{
+		Path:  dstVhdPath,
+		Type_: sm.AttachmentType,
+	}
 
 	clonedScsiMount := newSCSIMount(vm, dstVhdPath, sm.UVMPath, sm.AttachmentType, 1, sm.Controller, sm.LUN, sm.IsReadOnly)
 
