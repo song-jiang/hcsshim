@@ -31,7 +31,7 @@ type OptionsWCOW struct {
 	// specifies if this UVM will be saved as a template in future. Setting this
 	// option to true will enable some VSMB Options during UVM creation that allow
 	// template creation.
-	SaveAsTemplateCapable bool
+	IsTemplate bool
 
 	// Specifies if this UVM should be created by cloning a template. If IsClone is
 	// true then a valid UVMTemplateConfig struct must be passed in the
@@ -278,7 +278,6 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 				return nil, fmt.Errorf("Failed while cloning: %s", err)
 			}
 		}
-
 		// we add default clone namespace for each clone. Include it here.
 		if uvm.namespaces == nil {
 			uvm.namespaces = make(map[string]*namespaceInfo)
@@ -290,11 +289,9 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 	}
 
 	// Add appropriate VSMB share options if this UVM needs to be saved as a template
-	if opts.SaveAsTemplateCapable {
+	if opts.IsTemplate {
 		for _, share := range doc.VirtualMachine.Devices.VirtualSmb.Shares {
-			share.Options.PseudoDirnotify = true
-			share.Options.NoLocks = true
-			share.Options.NoDirectmap = true
+			uvm.SetSaveableVSMBOptions(share.Options, share.Options.ReadOnly)
 		}
 	}
 

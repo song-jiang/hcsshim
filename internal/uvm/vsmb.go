@@ -48,6 +48,28 @@ func (uvm *UtilityVM) DefaultVSMBOptions(readOnly bool) *hcsschema.VirtualSmbSha
 	return opts
 }
 
+func (uvm *UtilityVM) SetSaveableVSMBOptions(opts *hcsschema.VirtualSmbShareOptions, readOnly bool) {
+	if readOnly {
+		opts.ShareRead = true
+		opts.CacheIo = true
+		opts.ReadOnly = true
+		opts.PseudoOplocks = true
+		opts.NoOplocks = false
+	} else {
+		// Using NoOpLocks can cause intermittent Access denied failures due to
+		// a VSMB bug that was fixed but not backported to RS5/19H1.
+		opts.ShareRead = false
+		opts.CacheIo = false
+		opts.ReadOnly = false
+		opts.PseudoOplocks = false
+		opts.NoOplocks = true
+	}
+	opts.NoLocks = true
+	opts.PseudoDirnotify = true
+	opts.NoDirectmap = true
+	return
+}
+
 // findVSMBShare finds a share by `hostPath`. If not found returns `ErrNotAttached`.
 func (uvm *UtilityVM) findVSMBShare(ctx context.Context, m map[string]*VSMBShare, hostPath string) (*VSMBShare, error) {
 	share, ok := m[hostPath]
@@ -99,6 +121,7 @@ func (uvm *UtilityVM) AddVSMB(ctx context.Context, hostPath string, options *hcs
 			vm:        uvm,
 			Name:      shareName,
 			GuestPath: vsmbSharePrefix + shareName,
+			HostPath:  hostPath,
 		}
 	}
 	newAllowedFiles := share.AllowedFiles
@@ -128,6 +151,7 @@ func (uvm *UtilityVM) AddVSMB(ctx context.Context, hostPath string, options *hcs
 
 	share.AllowedFiles = newAllowedFiles
 	share.refCount++
+	share.Options = *options
 	m[hostPath] = share
 	return share, nil
 }
@@ -225,7 +249,11 @@ func (vsmb *VSMBShare) Clone(ctx context.Context, vm *UtilityVM, cd *CloneData) 
 		GuestPath:    vsmb.GuestPath,
 	}
 
-	vm.vsmbDirShares[vsmb.HostPath] = clonedVSMB
+	if vsmb.Options.RestrictFileAccess {
+		vm.vsmbFileShares[vsmb.HostPath] = clonedVSMB
+	} else {
+		vm.vsmbDirShares[vsmb.HostPath] = clonedVSMB
+	}
 
 	return clonedVSMB, nil
 }

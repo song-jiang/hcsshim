@@ -49,7 +49,8 @@ func newHcsExec(
 	id, bundle string,
 	isWCOW bool,
 	spec *specs.Process,
-	io hcsoci.UpstreamIO) shimExec {
+	io hcsoci.UpstreamIO,
+	saveAsTemplate bool) shimExec {
 	log.G(ctx).WithFields(logrus.Fields{
 		"tid":    tid,
 		"eid":    id, // Init exec ID is always same as Task ID
@@ -57,20 +58,26 @@ func newHcsExec(
 		"wcow":   isWCOW,
 	}).Debug("newHcsExec")
 
+	if tid != id && saveAsTemplate {
+		log.G(ctx).Error("newHcsExec failure: saveAsTemplate can not be true when HcsExec is not the init process")
+		return nil
+	}
+
 	he := &hcsExec{
-		events:      events,
-		tid:         tid,
-		host:        host,
-		c:           c,
-		id:          id,
-		bundle:      bundle,
-		isWCOW:      isWCOW,
-		spec:        spec,
-		io:          io,
-		processDone: make(chan struct{}),
-		state:       shimExecStateCreated,
-		exitStatus:  255, // By design for non-exited process status.
-		exited:      make(chan struct{}),
+		events:         events,
+		tid:            tid,
+		host:           host,
+		c:              c,
+		id:             id,
+		bundle:         bundle,
+		isWCOW:         isWCOW,
+		spec:           spec,
+		io:             io,
+		processDone:    make(chan struct{}),
+		state:          shimExecStateCreated,
+		exitStatus:     255, // By design for non-exited process status.
+		exited:         make(chan struct{}),
+		saveAsTemplate: saveAsTemplate,
 	}
 	go he.waitForContainerExit()
 	return he
@@ -134,6 +141,10 @@ type hcsExec struct {
 	// exited is a wait block which waits async for the process to exit.
 	exited     chan struct{}
 	exitedOnce sync.Once
+
+	// if saveAsTemplate is true then the container for which this is an init exec
+	// will be saved as a template as soon as this exec exits.
+	saveAsTemplate bool
 }
 
 func (he *hcsExec) ID() string {
@@ -181,7 +192,7 @@ func (he *hcsExec) Status() *task.StateResponse {
 	}
 }
 
-func (he *hcsExec) Start(ctx context.Context) (err error) {
+func (he *hcsExec) startInternal(ctx context.Context, initializeContainer bool) (err error) {
 	he.sl.Lock()
 	defer he.sl.Unlock()
 	if he.state != shimExecStateCreated {
@@ -192,8 +203,7 @@ func (he *hcsExec) Start(ctx context.Context) (err error) {
 			he.exitFromCreatedL(ctx, 1)
 		}
 	}()
-	if he.id == he.tid {
-		// This is the init exec. We need to start the container itself
+	if initializeContainer {
 		err = he.c.Start(ctx)
 		if err != nil {
 			return err
@@ -255,6 +265,12 @@ func (he *hcsExec) Start(ctx context.Context) (err error) {
 	// wait in the background for the exit.
 	go he.waitForExit()
 	return nil
+}
+
+func (he *hcsExec) Start(ctx context.Context) (err error) {
+	// If he.id == he.tid then this is the init exec.
+	// We need to initialize the container itself before starting this exec.
+	return he.startInternal(ctx, he.id == he.tid)
 }
 
 func (he *hcsExec) Kill(ctx context.Context, signal uint32) error {
@@ -414,6 +430,8 @@ func (he *hcsExec) exitFromCreatedL(ctx context.Context, status int) {
 //
 // 6. Close `he.exited` channel to unblock any waiters who might have called
 // `Create`/`Wait`/`Start` which is a valid pattern.
+//
+// 7. Finally, save the UVM and this container as a template if specified.
 func (he *hcsExec) waitForExit() {
 	ctx, span := trace.StartSpan(context.Background(), "hcsExec::waitForExit")
 	defer span.End()
@@ -467,6 +485,13 @@ func (he *hcsExec) waitForExit() {
 	he.exitedOnce.Do(func() {
 		close(he.exited)
 	})
+
+	if he.saveAsTemplate {
+		// Save the host as a template
+		if err = saveAsTemplate(ctx, he.host); err != nil {
+			log.G(ctx).WithError(err).Error("failed to save as template")
+		}
+	}
 }
 
 // waitForContainerExit waits for `he.c` to exit. Depending on the exec's state

@@ -111,6 +111,12 @@ func verifyOptions(ctx context.Context, options interface{}) error {
 		if opts.IsClone && opts.TemplateConfig == nil {
 			return errors.New("Template config can not be nil when creating clone")
 		}
+		if opts.IsClone && !opts.ExternalGuestConnection {
+			return errors.New("External gcs connection can not be disabled for clones")
+		}
+		if opts.IsTemplate && opts.FullyPhysicallyBacked {
+			return errors.New("Template can not be created from a full physically backed UVM")
+		}
 	}
 	return nil
 }

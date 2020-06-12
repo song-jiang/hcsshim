@@ -49,7 +49,7 @@ func allocateWindowsResources(ctx context.Context, coi *createOptionsInternal, r
 
 	if coi.Spec.Root.Path == "" && (coi.HostingSystem != nil || coi.Spec.Windows.HyperV == nil) {
 		log.G(ctx).Debug("hcsshim::allocateWindowsResources mounting storage")
-		containerRootPath, err := MountContainerLayers(ctx, coi.Spec.Windows.LayerFolders, r.containerRootInUVM, coi.HostingSystem)
+		containerRootPath, err := MountContainerLayers(ctx, coi.Spec.Windows.LayerFolders, r.containerRootInUVM, coi.HostingSystem, coi.isTemplate)
 		if err != nil {
 			return fmt.Errorf("failed to mount container storage: %s", err)
 		}
@@ -62,6 +62,29 @@ func allocateWindowsResources(ctx context.Context, coi *createOptionsInternal, r
 		r.layers = layers
 	}
 
+	if err := setupMounts(ctx, coi, r); err != nil {
+		return err
+	}
+
+	if cs, ok := coi.Spec.Windows.CredentialSpec.(string); ok {
+		// Only need to create a CCG instance for v2 containers
+		if schemaversion.IsV21(coi.actualSchemaVersion) {
+			hypervisorIsolated := coi.HostingSystem != nil
+			ccgState, ccgInstance, err := CreateCredentialGuard(ctx, coi.actualID, cs, hypervisorIsolated)
+			if err != nil {
+				return err
+			}
+			coi.ccgState = ccgState
+			r.resources = append(r.resources, ccgInstance)
+			//TODO dcantah: If/when dynamic service table entries is supported register the RpcEndpoint with hvsocket here
+		}
+	}
+	return nil
+}
+
+// setupMount adds the custom mounts requested in the container configuration of this
+// request.
+func setupMounts(ctx context.Context, coi *createOptionsInternal, r *Resources) error {
 	// Validate each of the mounts. If this is a V2 Xenon, we have to add them as
 	// VSMB shares to the utility VM. For V1 Xenon and Argons, there's nothing for
 	// us to do as it's done by HCS.
@@ -118,26 +141,15 @@ func allocateWindowsResources(ctx context.Context, coi *createOptionsInternal, r
 					l.Debug("hcsshim::allocateWindowsResources Hot-adding VSMB share for OCI mount")
 					options := coi.HostingSystem.DefaultVSMBOptions(readOnly)
 					share, err := coi.HostingSystem.AddVSMB(ctx, mount.Source, options)
+					if coi.isTemplate {
+						coi.HostingSystem.SetSaveableVSMBOptions(options, options.ReadOnly)
+					}
 					if err != nil {
 						return fmt.Errorf("failed to add VSMB share to utility VM for mount %+v: %s", mount, err)
 					}
 					r.resources = append(r.resources, share)
 				}
 			}
-		}
-	}
-
-	if cs, ok := coi.Spec.Windows.CredentialSpec.(string); ok {
-		// Only need to create a CCG instance for v2 containers
-		if schemaversion.IsV21(coi.actualSchemaVersion) {
-			hypervisorIsolated := coi.HostingSystem != nil
-			ccgState, ccgInstance, err := CreateCredentialGuard(ctx, coi.actualID, cs, hypervisorIsolated)
-			if err != nil {
-				return err
-			}
-			coi.ccgState = ccgState
-			r.resources = append(r.resources, ccgInstance)
-			//TODO dcantah: If/when dynamic service table entries is supported register the RpcEndpoint with hvsocket here
 		}
 	}
 	return nil
