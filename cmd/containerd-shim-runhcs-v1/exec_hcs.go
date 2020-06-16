@@ -50,7 +50,7 @@ func newHcsExec(
 	isWCOW bool,
 	spec *specs.Process,
 	io hcsoci.UpstreamIO,
-	saveAsTemplate bool) shimExec {
+	isTemplate bool) shimExec {
 	log.G(ctx).WithFields(logrus.Fields{
 		"tid":    tid,
 		"eid":    id, // Init exec ID is always same as Task ID
@@ -58,26 +58,26 @@ func newHcsExec(
 		"wcow":   isWCOW,
 	}).Debug("newHcsExec")
 
-	if tid != id && saveAsTemplate {
+	if tid != id && isTemplate {
 		log.G(ctx).Error("newHcsExec failure: saveAsTemplate can not be true when HcsExec is not the init process")
 		return nil
 	}
 
 	he := &hcsExec{
-		events:         events,
-		tid:            tid,
-		host:           host,
-		c:              c,
-		id:             id,
-		bundle:         bundle,
-		isWCOW:         isWCOW,
-		spec:           spec,
-		io:             io,
-		processDone:    make(chan struct{}),
-		state:          shimExecStateCreated,
-		exitStatus:     255, // By design for non-exited process status.
-		exited:         make(chan struct{}),
-		saveAsTemplate: saveAsTemplate,
+		events:      events,
+		tid:         tid,
+		host:        host,
+		c:           c,
+		id:          id,
+		bundle:      bundle,
+		isWCOW:      isWCOW,
+		spec:        spec,
+		io:          io,
+		processDone: make(chan struct{}),
+		state:       shimExecStateCreated,
+		exitStatus:  255, // By design for non-exited process status.
+		exited:      make(chan struct{}),
+		isTemplate:  isTemplate,
 	}
 	go he.waitForContainerExit()
 	return he
@@ -142,9 +142,9 @@ type hcsExec struct {
 	exited     chan struct{}
 	exitedOnce sync.Once
 
-	// if saveAsTemplate is true then the container for which this is an init exec
+	// if isTemplate is true then the container for which this is an init exec
 	// will be saved as a template as soon as this exec exits.
-	saveAsTemplate bool
+	isTemplate bool
 }
 
 func (he *hcsExec) ID() string {
@@ -486,7 +486,7 @@ func (he *hcsExec) waitForExit() {
 		close(he.exited)
 	})
 
-	if he.saveAsTemplate {
+	if he.isTemplate {
 		// Save the host as a template
 		if err = saveAsTemplate(ctx, he.host); err != nil {
 			log.G(ctx).WithError(err).Error("failed to save as template")

@@ -18,7 +18,7 @@ const (
 type persistedUVMConfig struct {
 	// actual information related to template / clone
 	RawData []byte
-	// metadata field used to determine if this config is already started.
+	// metadata field used to determine if this config is already saved.
 	Stored bool
 }
 
@@ -38,7 +38,7 @@ func encodeTemplateConfig(utc *uvm.UVMTemplateConfig) ([]byte, error) {
 	encoder := gob.NewEncoder(&buf)
 	err := encoder.Encode(utc)
 	if err != nil {
-		return nil, fmt.Errorf("Error while encoding template config: %s", err)
+		return nil, fmt.Errorf("error while encoding template config: %s", err)
 	}
 	return buf.Bytes(), nil
 }
@@ -50,7 +50,7 @@ func decodeTemplateConfig(encodedBytes []byte) (*uvm.UVMTemplateConfig, error) {
 	decoder := gob.NewDecoder(reader)
 	err := decoder.Decode(&utc)
 	if err != nil {
-		return nil, fmt.Errorf("Error while decoding template config: %s", err)
+		return nil, fmt.Errorf("error while decoding template config: %s", err)
 	}
 	return &utc, nil
 }
@@ -64,13 +64,13 @@ func loadPersistedUVMConfig(ID string) (*persistedUVMConfig, error) {
 	}
 	defer sk.Close()
 
-	puc := persistedUVMConfig{
+	puc := &persistedUVMConfig{
 		Stored: true,
 	}
-	if err := sk.Get(ID, configKey, &puc); err != nil {
+	if err := sk.Get(ID, configKey, puc); err != nil {
 		return nil, err
 	}
-	return &puc, nil
+	return puc, nil
 }
 
 // storePersistedUVMConfig stores or updates the in-memory config to its registry state.
@@ -121,7 +121,7 @@ func removePersistedUVMConfig(ID string) error {
 func SaveTemplateConfig(ctx context.Context, utc *uvm.UVMTemplateConfig) error {
 	_, err := loadPersistedUVMConfig(utc.UVMID)
 	if !regstate.IsNotFoundError(err) {
-		return fmt.Errorf("Parent VM(ID: %s) config shouldn't exit in registry (%s) \n", utc.UVMID, err.Error())
+		return fmt.Errorf("parent VM(ID: %s) config shouldn't exit in registry (%s) \n", utc.UVMID, err.Error())
 	}
 
 	encodedBytes, err := encodeTemplateConfig(utc)

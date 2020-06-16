@@ -31,7 +31,7 @@ func addMountsToClone(ctx context.Context, c cow.Container, mounts *mountsConfig
 		}
 		err := c.Modify(ctx, requestDocument)
 		if err != nil {
-			return fmt.Errorf("Error while adding mapped directory (%s) to the container: %s", md.HostPath, err)
+			return fmt.Errorf("error while adding mapped directory (%s) to the container: %s", md.HostPath, err)
 		}
 	}
 
@@ -43,7 +43,7 @@ func addMountsToClone(ctx context.Context, c cow.Container, mounts *mountsConfig
 		}
 		err := c.Modify(ctx, requestDocument)
 		if err != nil {
-			return fmt.Errorf("Error while adding mapped pipe (%s) to the container: %s", mp.HostPath, err)
+			return fmt.Errorf("error while adding mapped pipe (%s) to the container: %s", mp.HostPath, err)
 		}
 	}
 	return nil

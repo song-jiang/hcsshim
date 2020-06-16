@@ -118,10 +118,6 @@ func configureSandboxNetwork(ctx context.Context, coi *createOptionsInternal, re
 	}
 	coi.actualNetworkNamespace = resources.netNS
 
-	// This function adds network namespace only for LCOW pods (network namespace
-	// hot-add for WCOW is done at the time of pod creation). And for LCOW we don't
-	// support late cloning hence pass false for both isTemplate and isClone in
-	// SetupNetworkNamespace function.
 	if coi.HostingSystem != nil {
 		ct, _, err := oci.GetSandboxTypeAndID(coi.Spec.Annotations)
 		if err != nil {
@@ -287,10 +283,6 @@ func CloneContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.Co
 		return nil, resources, err
 	}
 
-	// everything that is added to the container during the createContainer request
-	// (via the gcsDocument) must be hot added here.  Add the mounts as mapped
-	// directories or mapped pipes. In case of cloned container we must add them as a
-	// modify request.
 	mounts, err := createMountsConfig(ctx, coi)
 	if err != nil {
 		return nil, resources, err
@@ -301,6 +293,8 @@ func CloneContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.Co
 		return nil, resources, err
 	}
 
+	// Everything that is usually added to the container during the createContainer
+	// request (via the gcsDocument) must be hot added here.
 	if err := addMountsToClone(ctx, c, mounts); err != nil {
 		return nil, resources, err
 	}

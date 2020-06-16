@@ -28,20 +28,20 @@ func newClonedExec(
 	}).Debug("newClonedExec")
 
 	he := &hcsExec{
-		events:         events,
-		tid:            tid,
-		host:           host,
-		c:              c,
-		id:             id,
-		bundle:         bundle,
-		isWCOW:         isWCOW,
-		spec:           spec,
-		io:             io,
-		processDone:    make(chan struct{}),
-		state:          shimExecStateCreated,
-		exitStatus:     255, // By design for non-exited process status.
-		exited:         make(chan struct{}),
-		saveAsTemplate: false,
+		events:      events,
+		tid:         tid,
+		host:        host,
+		c:           c,
+		id:          id,
+		bundle:      bundle,
+		isWCOW:      isWCOW,
+		spec:        spec,
+		io:          io,
+		processDone: make(chan struct{}),
+		state:       shimExecStateCreated,
+		exitStatus:  255, // By design for non-exited process status.
+		exited:      make(chan struct{}),
+		isTemplate:  false,
 	}
 
 	ce := &clonedExec{

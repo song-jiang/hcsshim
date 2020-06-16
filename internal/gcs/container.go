@@ -61,7 +61,8 @@ func (gc *GuestConnection) CreateContainer(ctx context.Context, cid string, conf
 	return c, nil
 }
 
-// CloneContainer creates a container using ID `cid` and `config`
+// CloneContainer just creates the wrappers and sets up notification requests for a
+// container that is already running inside the UVM (after cloning).
 func (gc *GuestConnection) CloneContainer(ctx context.Context, cid string) (_ *Container, err error) {
 	c := &Container{
 		gc:       gc,

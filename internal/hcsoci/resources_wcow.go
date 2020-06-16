@@ -141,7 +141,7 @@ func setupMounts(ctx context.Context, coi *createOptionsInternal, r *Resources) 
 					l.Debug("hcsshim::allocateWindowsResources Hot-adding VSMB share for OCI mount")
 					options := coi.HostingSystem.DefaultVSMBOptions(readOnly)
 					share, err := coi.HostingSystem.AddVSMB(ctx, mount.Source, options)
-					if coi.isTemplate {
+					if coi.HostingSystem.IsTemplate {
 						coi.HostingSystem.SetSaveableVSMBOptions(options, options.ReadOnly)
 					}
 					if err != nil {

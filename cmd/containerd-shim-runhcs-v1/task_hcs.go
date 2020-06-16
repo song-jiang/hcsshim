@@ -175,8 +175,8 @@ func newHcsTask(
 	}
 
 	// In the normal case the `Signal` call from the caller killed this task's
-	// init process. Or the init process ran to completion (this will mostly
-	// happen when we are creating a tempate and want to wait for init process
+	// init process. Or the init process ran to completion - this will mostly
+	// happen when we are creating a template and want to wait for init process
 	// to finish before we save the template. In such cases do not tear down the
 	// container after init exits - because we need the container in the template
 	go ht.waitInitExit(!isTemplate)
@@ -225,7 +225,7 @@ func newClonedHcsTask(
 	owner := filepath.Base(os.Args[0])
 
 	if parent.OS() != "windows" {
-		return nil, fmt.Errorf("Cloned task can only be created inside a windows host")
+		return nil, fmt.Errorf("cloned task can only be created inside a windows host")
 	}
 
 	io, err := hcsoci.NewNpipeIO(ctx, req.Stdin, req.Stdout, req.Stderr, req.Terminal)
@@ -694,7 +694,7 @@ func (ht *hcsTask) closeHost(ctx context.Context) {
 			if err := ht.host.Close(); err != nil {
 				log.G(ctx).WithError(err).Error("failed host vm shutdown")
 			}
-			// cleanup tempalte state if any exists
+			// cleanup template state if any exists
 			if err := clone.RemoveSavedTemplateConfig(ht.host.ID()); err != nil {
 				log.G(ctx).WithError(err).Error("failed to cleanup template config state for vm")
 			}
