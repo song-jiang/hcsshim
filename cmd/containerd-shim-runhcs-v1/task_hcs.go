@@ -243,7 +243,7 @@ func newClonedHcsTask(
 	// that are specified in the spec (these resources must have already
 	// been allocated at the time of UVM cloning). Remove these resources from
 	// the spec here.
-	// Similary, use the templateid as the ID of the container here because that's
+	// Similarly, use the templateid as the ID of the container here because that's
 	// the ID of this container inside the UVM.
 	layerFolders := s.Windows.LayerFolders
 	s.Windows.LayerFolders = []string{}
