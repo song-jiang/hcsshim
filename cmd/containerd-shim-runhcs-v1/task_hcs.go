@@ -10,7 +10,6 @@ import (
 
 	"github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
 	"github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/stats"
-	"github.com/Microsoft/hcsshim/internal/clone"
 	"github.com/Microsoft/hcsshim/internal/cow"
 	"github.com/Microsoft/hcsshim/internal/hcs"
 	"github.com/Microsoft/hcsshim/internal/hcsoci"
@@ -693,10 +692,6 @@ func (ht *hcsTask) closeHost(ctx context.Context) {
 		if ht.ownsHost && ht.host != nil {
 			if err := ht.host.Close(); err != nil {
 				log.G(ctx).WithError(err).Error("failed host vm shutdown")
-			}
-			// cleanup template state if any exists
-			if err := clone.RemoveSavedTemplateConfig(ht.host.ID()); err != nil {
-				log.G(ctx).WithError(err).Error("failed to cleanup template config state for vm")
 			}
 		}
 		// Send the `init` exec exit notification always.
