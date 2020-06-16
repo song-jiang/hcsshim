@@ -38,10 +38,10 @@ type OptionsWCOW struct {
 	// `TemplateConfig` field.
 	IsClone bool
 
-	// This option is only used during clone creation. If a uvm is being cloned
-	// instead of creating it from scratch then this templateConfig struct
-	// must be passed which holds all the information about the template from which
-	// this clone should be created.
+	// This option is only used during clone creation. If a uvm is
+	// being cloned then this TemplateConfig struct must be passed
+	// which holds all the information about the template from
+	// which this clone should be created.
 	TemplateConfig *UVMTemplateConfig
 }
 
@@ -56,27 +56,6 @@ func NewDefaultOptionsWCOW(id, owner string) *OptionsWCOW {
 	return &OptionsWCOW{
 		Options: newDefaultOptions(id, owner),
 	}
-}
-
-// Finds a scratch Folder for this uvm. If it is not already created by the caller creates
-// a new folder.
-func getScratchFolder(ctx context.Context, opts *OptionsWCOW) (_ string, err error) {
-	// TODO: BUGBUG Remove this. @jhowardmsft
-	//       It should be the responsiblity of the caller to do the creation and population.
-	//       - Update runhcs too (vm.go).
-	//       - Remove comment in function header
-	//       - Update tests that rely on this current behaviour.
-	// TOOD(ambarve): Should we remove this code for scratch folder creation?
-	// It is always created by containerd as of now.
-	scratchFolder := opts.LayerFolders[len(opts.LayerFolders)-1]
-
-	// Create the directory if it doesn't exist
-	if _, err = os.Stat(scratchFolder); os.IsNotExist(err) {
-		if err = os.MkdirAll(scratchFolder, 0777); err != nil {
-			return "", fmt.Errorf("failed to create utility VM scratch folder: %s", err)
-		}
-	}
-	return scratchFolder, nil
 }
 
 func (uvm *UtilityVM) startExternalGcsListener(ctx context.Context) error {
@@ -229,14 +208,24 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 		return nil, fmt.Errorf("failed to locate utility VM folder from layer folders: %s", err)
 	}
 
-	scratchFolder, err := getScratchFolder(ctx, opts)
-	if err != nil {
-		return nil, err
+	// TODO: BUGBUG Remove this. @jhowardmsft
+	//       It should be the responsiblity of the caller to do the creation and population.
+	//       - Update runhcs too (vm.go).
+	//       - Remove comment in function header
+	//       - Update tests that rely on this current behaviour.
+	// Create the RW scratch in the top-most layer folder, creating the folder if it doesn't already exist.
+	scratchFolder := opts.LayerFolders[len(opts.LayerFolders)-1]
+
+	// Create the directory if it doesn't exist
+	if _, err := os.Stat(scratchFolder); os.IsNotExist(err) {
+		if err := os.MkdirAll(scratchFolder, 0777); err != nil {
+			return nil, fmt.Errorf("failed to create utility VM scratch folder: %s", err)
+		}
 	}
 
 	doc, err := prepareConfigDoc(ctx, uvm, opts, uvmFolder)
 	if err != nil {
-		return nil, fmt.Errorf("Error in preparing config doc: %s", err)
+		return nil, fmt.Errorf("error in preparing config doc: %s", err)
 	}
 
 	if !opts.IsClone {
@@ -275,17 +264,18 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 				UVMID:         opts.ID,
 			})
 			if err != nil {
-				return nil, fmt.Errorf("Failed while cloning: %s", err)
+				return nil, fmt.Errorf("failed while cloning: %s", err)
 			}
 		}
+
 		// we add default clone namespace for each clone. Include it here.
 		if uvm.namespaces == nil {
 			uvm.namespaces = make(map[string]*namespaceInfo)
 		}
-		uvm.namespaces[hns.CLONING_DEFAULT_NETWORK_NAMESPACE_ID] = &namespaceInfo{
+		uvm.namespaces[hns.DEFAULT_CLONE_NETWORK_NAMESPACE_ID] = &namespaceInfo{
 			nics: make(map[string]*nicInfo),
 		}
-		uvm.isClone = true
+		uvm.IsClone = true
 	}
 
 	// Add appropriate VSMB share options if this UVM needs to be saved as a template
@@ -293,6 +283,7 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 		for _, share := range doc.VirtualMachine.Devices.VirtualSmb.Shares {
 			uvm.SetSaveableVSMBOptions(share.Options, share.Options.ReadOnly)
 		}
+		uvm.IsTemplate = true
 	}
 
 	fullDoc, err := mergemaps.MergeJSON(doc, ([]byte)(opts.AdditionHCSDocumentJSON))
@@ -306,7 +297,7 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 	}
 
 	// All clones MUST use external gcs connection
-	if opts.ExternalGuestConnection || opts.IsClone {
+	if opts.ExternalGuestConnection {
 		if err = uvm.startExternalGcsListener(ctx); err != nil {
 			return nil, err
 		}

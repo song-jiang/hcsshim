@@ -131,7 +131,7 @@ func configureSandboxNetwork(ctx context.Context, coi *createOptionsInternal, re
 		// container but not a workload container in a sandbox that inherits
 		// the namespace.
 		if ct == oci.KubernetesContainerTypeNone || ct == oci.KubernetesContainerTypeSandbox {
-			if err = SetupNetworkNamespace(ctx, coi.HostingSystem, coi.actualNetworkNamespace, false, false); err != nil {
+			if err = SetupNetworkNamespace(ctx, coi.HostingSystem, coi.actualNetworkNamespace); err != nil {
 				return err
 			}
 			resources.addedNetNSToVM = true

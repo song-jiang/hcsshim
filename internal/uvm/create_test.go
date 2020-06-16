@@ -34,5 +34,4 @@ func TestCreateClone(t *testing.T) {
 	if err == nil {
 		t.Fatalf("CreateWCOW should fail when IsClone is true and TemplateConfig is not provided")
 	}
-
 }

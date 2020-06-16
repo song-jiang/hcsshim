@@ -105,6 +105,8 @@ func (gc *GuestConnection) Protocol() uint32 {
 }
 
 // connect establishes a GCS connection. It must not be called more than once.
+// sendHostCreate should be set to `true` when connecting to the uvm that is created from
+// scratch. It should be `false` when connecting to the cloned uvm.
 func (gc *GuestConnection) connect(ctx context.Context, sendHostCreate bool) (err error) {
 	req := negotiateProtocolRequest{
 		MinimumVersion: protocolVersion,

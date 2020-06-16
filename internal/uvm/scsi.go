@@ -72,7 +72,7 @@ type SCSIMount struct {
 	isLayer  bool
 	refCount uint32
 	// specifies if this is a readonly layer
-	IsReadOnly bool
+	ReadOnly bool
 	// "VirtualDisk" or "PassThru" disk attachment type.
 	AttachmentType string
 }
@@ -96,7 +96,7 @@ func newSCSIMount(uvm *UtilityVM, hostPath, uvmPath, attachmentType string, refC
 		refCount:       refCount,
 		Controller:     controller,
 		LUN:            int32(lun),
-		IsReadOnly:     readOnly,
+		ReadOnly:       readOnly,
 		AttachmentType: attachmentType,
 	}
 }
@@ -372,7 +372,7 @@ func (sm *SCSIMount) Clone(ctx context.Context, vm *UtilityVM, cd *CloneData) (i
 		lunStr     string = fmt.Sprintf("%d", sm.LUN)
 	)
 
-	if !sm.IsReadOnly {
+	if !sm.ReadOnly {
 		// Copy this scsi disk
 		// TODO(ambarve): This is a writeable SCSI mount. It can either be the
 		// scratch VHD of the UVM or it can be a SCSI mount that belongs to some
@@ -392,7 +392,7 @@ func (sm *SCSIMount) Clone(ctx context.Context, vm *UtilityVM, cd *CloneData) (i
 		} else {
 			dir, err = ioutil.TempDir(cd.scratchFolder, fmt.Sprintf("clone-mount-%d-%d", sm.Controller, sm.LUN))
 			if err != nil {
-				return nil, fmt.Errorf("Error while creating directory for scsi mounts of clone vm: %s", err)
+				return nil, fmt.Errorf("error while creating directory for scsi mounts of clone vm: %s", err)
 			}
 		}
 
@@ -430,7 +430,7 @@ func (sm *SCSIMount) Clone(ctx context.Context, vm *UtilityVM, cd *CloneData) (i
 		Type_: sm.AttachmentType,
 	}
 
-	clonedScsiMount := newSCSIMount(vm, dstVhdPath, sm.UVMPath, sm.AttachmentType, 1, sm.Controller, sm.LUN, sm.IsReadOnly)
+	clonedScsiMount := newSCSIMount(vm, dstVhdPath, sm.UVMPath, sm.AttachmentType, 1, sm.Controller, sm.LUN, sm.ReadOnly)
 
 	vm.scsiLocations[sm.Controller][sm.LUN] = clonedScsiMount
 

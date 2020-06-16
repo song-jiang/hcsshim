@@ -109,7 +109,7 @@ func verifyOptions(ctx context.Context, options interface{}) error {
 			return errors.New("at least 2 LayerFolders must be supplied")
 		}
 		if opts.IsClone && opts.TemplateConfig == nil {
-			return errors.New("Template config can not be nil when creating clone")
+			return errors.New("template config can not be nil when creating clone")
 		}
 		if opts.IsClone && !opts.ExternalGuestConnection {
 			return errors.New("External gcs connection can not be disabled for clones")
@@ -323,13 +323,12 @@ func (uvm *UtilityVM) DevicesPhysicallyBacked() bool {
 
 // Closes the external GCS connection if it is being used and also closes the
 // listener for GCS connection.
-func (uvm *UtilityVM) CloseGCSConnection() error {
-	var err error = nil
+func (uvm *UtilityVM) CloseGCSConnection() (err error) {
 	if uvm.gc != nil {
 		err = uvm.gc.Close()
 	}
 	if err != nil && uvm.gcListener != nil {
 		err = uvm.gcListener.Close()
 	}
-	return err
+	return
 }

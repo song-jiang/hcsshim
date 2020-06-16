@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/Microsoft/hcsshim/internal/hcsoci"
-	"github.com/Microsoft/hcsshim/internal/hns"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/oci"
 	"github.com/Microsoft/hcsshim/internal/uvm"
@@ -84,7 +83,6 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 
 	owner := filepath.Base(os.Args[0])
 	isWCOW := oci.IsWCOW(s)
-	var isTemplate, isClone bool
 
 	var parent *uvm.UtilityVM
 	if oci.IsIsolated(s) {
@@ -122,8 +120,6 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 			if err != nil {
 				return nil, err
 			}
-			isTemplate = wopts.IsTemplate
-			isClone = wopts.IsClone
 		}
 		err = parent.Start(ctx)
 		if err != nil {
@@ -141,11 +137,9 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 	}()
 
 	p := pod{
-		events:     events,
-		id:         req.ID,
-		host:       parent,
-		isClone:    isClone,
-		isTemplate: isTemplate,
+		events: events,
+		id:     req.ID,
+		host:   parent,
 	}
 	// TOOD: JTERRY75 - There is a bug in the compartment activation for Windows
 	// Process isolated that requires us to create the real pause container to
@@ -159,7 +153,7 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 		// automatically.
 		if parent != nil {
 			if s.Windows != nil && s.Windows.Network != nil {
-				err = hcsoci.SetupNetworkNamespace(ctx, parent, s.Windows.Network.NetworkNamespace, p.isTemplate, p.isClone)
+				err = hcsoci.SetupNetworkNamespace(ctx, parent, s.Windows.Network.NetworkNamespace)
 				if err != nil {
 					return nil, err
 				}
@@ -228,10 +222,6 @@ type pod struct {
 	// to release the lock to allow concurrent creates.
 	wcl           sync.Mutex
 	workloadTasks sync.Map
-
-	// Specifies if this pod is a template or is a clone
-	isTemplate bool
-	isClone    bool
 }
 
 func (p *pod) ID() string {
@@ -246,7 +236,7 @@ func (p *pod) getCloneAnnotations(ctx context.Context, s *specs.Spec) (isTemplat
 	}
 
 	if (isTemplate || templateID != "") && (p.host == nil || p.host.OS() != "windows") {
-		return false, "", errors.Wrapf(errdefs.ErrInvalidArgument, "Save as template and creating clones is only available for WCOW.")
+		return false, "", errors.Wrapf(errdefs.ErrInvalidArgument, "save as template and creating clones is only available for WCOW.")
 	}
 	return
 }
@@ -291,14 +281,6 @@ func (p *pod) CreateTask(ctx context.Context, req *task.CreateTaskRequest, s *sp
 			oci.KubernetesSandboxIDAnnotation,
 			p.id,
 			sid)
-	}
-
-	// for template containers, cloned containers and for normal containers created inside
-	// cloned pods we should use the clone specific default network namespace. Override
-	// it here.
-	if (p.isClone || p.isTemplate) && s.Windows != nil && s.Windows.Network != nil {
-		log.G(ctx).Infof("Overriding network namespace for container %s from %s to default clone specific namespace.", req.ID, s.Windows.Network.NetworkNamespace)
-		s.Windows.Network.NetworkNamespace = hns.CLONING_DEFAULT_NETWORK_NAMESPACE_ID
 	}
 
 	_, templateID, err := p.getCloneAnnotations(ctx, s)

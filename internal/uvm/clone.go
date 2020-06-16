@@ -18,18 +18,18 @@ const (
 // mainly used during late cloning process to clone the resources associated with the UVM
 // and the container. For some resources (like scratch VHDs of the UVM & container)
 // cloning means actually creating a copy of that resource while for some resources it
-// simply means adding that resources to the cloned VM without copying. The Clone function
-// of that resource will deal with these details.
+// simply means adding that resource to the cloned VM without copying (like VSMB shares).
+// The Clone function of that resource will deal with these details.
 type Cloneable interface {
 	// Clone function creates a clone of the resource on the UVM `vm` and returns a
-	// pointer to the struct that represents the clone.
+	// pointer to the struct that represents the cloned resource.
 	// `cd` parameter can be used to pass any other data that is required during the
 	// cloning process of that resource (for example, when cloning SCSI Mounts we
 	// might need scratchFolder).
 	// Clone function should be called on a valid struct (Mostly on the struct which
 	// is deserialized, and so Clone function should only depend on the fields that are
 	// exported in the struct).
-	// The implementation of the clone function should never read any data from the
+	// The implementation of the clone function should avoid reading any data from the
 	// `vm` struct, it can add new fields to the vm struct but since the vm struct
 	// isn't fully ready at this point it shouldn't be used to read any data.
 	Clone(ctx context.Context, vm *UtilityVM, cd *CloneData) (interface{}, error)
@@ -38,9 +38,12 @@ type Cloneable interface {
 // A struct to keep all the information that might be required during cloning process of
 // a resource.
 type CloneData struct {
-	doc           *hcsschema.ComputeSystem
+	// doc spec for the clone
+	doc *hcsschema.ComputeSystem
+	// scratchFolder of the clone
 	scratchFolder string
-	UVMID         string
+	// UVMID of the clone
+	UVMID string
 }
 
 // UVMTemplateConfig is just a wrapper struct that keeps together all the resources that
@@ -57,43 +60,44 @@ type UVMTemplateConfig struct {
 // later on made available while creating a clone from this template.
 func (uvm *UtilityVM) GenerateTemplateConfig() *UVMTemplateConfig {
 	// Add all the SCSI Mounts and VSMB shares into the list of clones
-	utc := UVMTemplateConfig{
+	templateConfig := &UVMTemplateConfig{
 		UVMID: uvm.ID(),
 	}
 
 	for _, vsmbShare := range uvm.vsmbDirShares {
 		if vsmbShare != nil {
-			utc.Resources = append(utc.Resources, vsmbShare)
+			templateConfig.Resources = append(templateConfig.Resources, vsmbShare)
 		}
 	}
 
 	for _, vsmbShare := range uvm.vsmbFileShares {
 		if vsmbShare != nil {
-			utc.Resources = append(utc.Resources, vsmbShare)
+			templateConfig.Resources = append(templateConfig.Resources, vsmbShare)
 		}
 	}
 
 	for _, location := range uvm.scsiLocations {
 		for _, scsiMount := range location {
 			if scsiMount != nil {
-				utc.Resources = append(utc.Resources, scsiMount)
+				templateConfig.Resources = append(templateConfig.Resources, scsiMount)
 			}
 		}
 	}
 
-	return &utc
+	return templateConfig
 }
 
-// Saves the utility VM as a template so that it can be used for cloning later.
+// Pauses the uvm and then saves it as a template. This uvm can not be restarted or used
+// after it is successfully saved.
 func (uvm *UtilityVM) SaveAsTemplate(ctx context.Context) error {
 	err := uvm.hcsSystem.Pause(ctx)
 	if err != nil {
-		return errors.Wrapf(err, "Error pausing the VM")
+		return errors.Wrap(err, "error pausing the VM")
 	}
 
 	err = uvm.hcsSystem.Save(ctx, hcsSaveOptions)
 	if err != nil {
-		return errors.Wrapf(err, "Error saving the VM")
+		return errors.Wrap(err, "error saving the VM")
 	}
 	return nil
 }
@@ -102,7 +106,7 @@ func (uvm *UtilityVM) SaveAsTemplate(ctx context.Context) error {
 // because of the clone
 func (uvm *UtilityVM) CloneContainer(ctx context.Context, id string) (cow.Container, error) {
 	if uvm.gc == nil {
-		return nil, fmt.Errorf("Clone container cannot work without external GCS connection")
+		return nil, fmt.Errorf("clone container cannot work without external GCS connection")
 	}
 	c, err := uvm.gc.CloneContainer(ctx, id)
 	if err != nil {
