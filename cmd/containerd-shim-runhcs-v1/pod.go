@@ -153,7 +153,7 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 		// automatically.
 		if parent != nil {
 			if s.Windows != nil && s.Windows.Network != nil {
-				err = hcsoci.SetupNetworkNamespace(ctx, parent, s.Windows.Network.NetworkNamespace, false, false)
+				err = hcsoci.SetupNetworkNamespace(ctx, parent, s.Windows.Network.NetworkNamespace)
 				if err != nil {
 					return nil, err
 				}

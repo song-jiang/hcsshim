@@ -101,9 +101,9 @@ func GetNamespaceEndpoints(ctx context.Context, netNS string) ([]*hns.HNSEndpoin
 // UVM. We hot add the namespace (with the default ID if this is a template). We get the
 // endpoints associated with this namespace and then hot add those endpoints (by changing
 // their namespace IDs by the deafult IDs if it is a template).
-func SetupNetworkNamespace(ctx context.Context, hostingSystem *uvm.UtilityVM, nsid string, isTemplate, isClone bool) error {
+func SetupNetworkNamespace(ctx context.Context, hostingSystem *uvm.UtilityVM, nsid string) error {
 	nsidInsideUVM := nsid
-	if isTemplate || isClone {
+	if hostingSystem.IsTemplate || hostingSystem.IsClone {
 		nsidInsideUVM = hns.DEFAULT_CLONE_NETWORK_NAMESPACE_ID
 	}
 
@@ -115,7 +115,7 @@ func SetupNetworkNamespace(ctx context.Context, hostingSystem *uvm.UtilityVM, ns
 
 	// Add the network namespace inside the UVM if it is not a clone. (Clones will
 	// inherit the namespace from template)
-	if !isClone {
+	if !hostingSystem.IsClone {
 		// Get the namespace struct from the actual nsid.
 		hcnNamespace, err := hcn.GetNamespaceByID(nsid)
 		if err != nil {
@@ -124,7 +124,7 @@ func SetupNetworkNamespace(ctx context.Context, hostingSystem *uvm.UtilityVM, ns
 
 		// All templates should have a special NSID so that it
 		// will be easier to debug. Override it here.
-		if isTemplate {
+		if hostingSystem.IsTemplate {
 			hcnNamespace.Id = nsidInsideUVM
 		}
 
@@ -135,7 +135,7 @@ func SetupNetworkNamespace(ctx context.Context, hostingSystem *uvm.UtilityVM, ns
 
 	// If adding a network endpoint to clones or a template override nsid associated
 	// with it.
-	if isClone || isTemplate {
+	if hostingSystem.IsClone || hostingSystem.IsTemplate {
 		// replace nsid for each endpoint
 		for _, ep := range endpoints {
 			ep.Namespace = &hns.Namespace{

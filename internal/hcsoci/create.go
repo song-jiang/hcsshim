@@ -146,7 +146,7 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 			// container but not a workload container in a sandbox that inherits
 			// the namespace.
 			if ct == oci.KubernetesContainerTypeNone || ct == oci.KubernetesContainerTypeSandbox {
-				err = SetupNetworkNamespace(ctx, coi.HostingSystem, coi.actualNetworkNamespace, false, false)
+				err = SetupNetworkNamespace(ctx, coi.HostingSystem, coi.actualNetworkNamespace)
 				if err != nil {
 					return nil, resources, err
 				}
