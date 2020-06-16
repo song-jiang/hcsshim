@@ -275,7 +275,7 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 		uvm.namespaces[hns.DEFAULT_CLONE_NETWORK_NAMESPACE_ID] = &namespaceInfo{
 			nics: make(map[string]*nicInfo),
 		}
-		uvm.isClone = true
+		uvm.IsClone = true
 	}
 
 	// Add appropriate VSMB share options if this UVM needs to be saved as a template
@@ -285,6 +285,7 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 			share.Options.NoLocks = true
 			share.Options.NoDirectmap = true
 		}
+		uvm.IsTemplate = true
 	}
 
 	fullDoc, err := mergemaps.MergeJSON(doc, ([]byte)(opts.AdditionHCSDocumentJSON))
