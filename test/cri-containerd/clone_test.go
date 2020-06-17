@@ -14,12 +14,11 @@ import (
 )
 
 // returns a request config for creating a template sandbox
-// Name field is empty so it must be filled before actually sending this request.
-func getTemplatePodConfig() *runtime.RunPodSandboxRequest {
+func getTemplatePodConfig(name string) *runtime.RunPodSandboxRequest {
 	return &runtime.RunPodSandboxRequest{
 		Config: &runtime.PodSandboxConfig{
 			Metadata: &runtime.PodSandboxMetadata{
-				Name:      "",
+				Name:      name,
 				Uid:       "0",
 				Namespace: testNamespace,
 			},
@@ -32,12 +31,11 @@ func getTemplatePodConfig() *runtime.RunPodSandboxRequest {
 }
 
 // returns a request config for creating a template container
-// Name field is empty so it must be filled before actually sending this request.
-func getTemplateContainerConfig() *runtime.CreateContainerRequest {
+func getTemplateContainerConfig(name string) *runtime.CreateContainerRequest {
 	return &runtime.CreateContainerRequest{
 		Config: &runtime.ContainerConfig{
 			Metadata: &runtime.ContainerMetadata{
-				Name: "",
+				Name: name,
 			},
 			Image: &runtime.ImageSpec{
 				Image: imageWindowsNanoserver,
@@ -57,12 +55,11 @@ func getTemplateContainerConfig() *runtime.CreateContainerRequest {
 }
 
 // returns a request config for creating a standard container
-// Name field is empty so it must be filled before actually sending this request.
-func getStandardContainerConfig() *runtime.CreateContainerRequest {
+func getStandardContainerConfig(name string) *runtime.CreateContainerRequest {
 	return &runtime.CreateContainerRequest{
 		Config: &runtime.ContainerConfig{
 			Metadata: &runtime.ContainerMetadata{
-				Name: "",
+				Name: name,
 			},
 			Image: &runtime.ImageSpec{
 				Image: imageWindowsNanoserver,
@@ -78,31 +75,29 @@ func getStandardContainerConfig() *runtime.CreateContainerRequest {
 	}
 }
 
-// returns a create cloned sandbox request config. This config can not be used
-// as it is because `Name` and `Annotation: templateid` fields are empty
-func getClonedPodConfig() *runtime.RunPodSandboxRequest {
+// returns a create cloned sandbox request config.
+func getClonedPodConfig(uniqueID int, templateid string) *runtime.RunPodSandboxRequest {
 	return &runtime.RunPodSandboxRequest{
 		Config: &runtime.PodSandboxConfig{
 			Metadata: &runtime.PodSandboxMetadata{
-				Name:      "",
+				Name:      fmt.Sprintf("clonedpod-%d", uniqueID),
 				Uid:       "0",
 				Namespace: testNamespace,
 			},
 			Annotations: map[string]string{
-				"io.microsoft.virtualmachine.templateid": "",
+				"io.microsoft.virtualmachine.templateid": templateid + "@vm",
 			},
 		},
 		RuntimeHandler: wcowHypervisorRuntimeHandler,
 	}
 }
 
-// returns a create cloned container request config. This config can not be used
-// as it is because `Name` and `Annotation: templateid` fields are empty
-func getClonedContainerConfig() *runtime.CreateContainerRequest {
+// returns a create cloned container request config.
+func getClonedContainerConfig(uniqueID int, templateid string) *runtime.CreateContainerRequest {
 	return &runtime.CreateContainerRequest{
 		Config: &runtime.ContainerConfig{
 			Metadata: &runtime.ContainerMetadata{
-				Name: "",
+				Name: fmt.Sprintf("clonedcontainer-%d", uniqueID),
 			},
 			Image: &runtime.ImageSpec{
 				Image: imageWindowsNanoserver,
@@ -116,7 +111,7 @@ func getClonedContainerConfig() *runtime.CreateContainerRequest {
 				"127.0.0.1",
 			},
 			Annotations: map[string]string{
-				"io.microsoft.virtualmachine.templateid": "",
+				"io.microsoft.virtualmachine.templateid": templateid,
 			},
 		},
 	}
@@ -173,14 +168,8 @@ func createTemplateContainer(ctx context.Context, t *testing.T, client runtime.R
 // It is the callers responsibility to clean the stop and remove the cloned
 // containers and pods.
 func createClonedContainer(ctx context.Context, t *testing.T, client runtime.RuntimeServiceClient, templatePodID, templateContainerID string, cloneNumber int) (clonedPodID, clonedContainerID string) {
-
-	cloneSandboxRequest := getClonedPodConfig()
-	cloneSandboxRequest.Config.Metadata.Name = fmt.Sprintf("clonedPod-%d", cloneNumber)
-	cloneSandboxRequest.Config.Annotations["io.microsoft.virtualmachine.templateid"] = templatePodID + "@vm"
-
-	cloneContainerRequest := getClonedContainerConfig()
-	cloneContainerRequest.Config.Metadata.Name = fmt.Sprintf("clonedContainer-%d", cloneNumber)
-	cloneContainerRequest.Config.Annotations["io.microsoft.virtualmachine.templateid"] = templateContainerID
+	cloneSandboxRequest := getClonedPodConfig(cloneNumber, templatePodID)
+	cloneContainerRequest := getClonedContainerConfig(cloneNumber, templateContainerID)
 	clonedPodID, clonedContainerID = createPodAndContainer(ctx, t, client, cloneSandboxRequest, cloneContainerRequest)
 	return
 }
@@ -206,7 +195,7 @@ func verifyContainerExec(ctx context.Context, t *testing.T, client runtime.Runti
 	if exitCode != 0 || len(errorMsg) != 0 {
 		t.Fatalf("Failed execution inside container %s with error: %s, exitCode: %d", containerID, errorMsg, exitCode)
 	} else {
-		t.Logf("Exec stdout: %s, stderr: %s, exitCode: %d\n", output, errorMsg, exitCode)
+		t.Logf("Exec(container: %s) stdout: %s, stderr: %s, exitCode: %d\n", containerID, output, errorMsg, exitCode)
 	}
 }
 
@@ -219,7 +208,7 @@ func Test_CloneContainer_WCOW(t *testing.T) {
 
 	pullRequiredImages(t, []string{imageWindowsNanoserver})
 
-	templatePodID, templateContainerID := createTemplateContainer(ctx, t, client, getTemplatePodConfig(), getTemplateContainerConfig())
+	templatePodID, templateContainerID := createTemplateContainer(ctx, t, client, getTemplatePodConfig("templatepod"), getTemplateContainerConfig("templatecontainer"))
 	defer removePodSandbox(t, client, ctx, templatePodID)
 	defer stopPodSandbox(t, client, ctx, templatePodID)
 	defer removeContainer(t, client, ctx, templateContainerID)
@@ -244,7 +233,7 @@ func Test_MultiplClonedContainers_WCOW(t *testing.T) {
 	pullRequiredImages(t, []string{imageWindowsNanoserver})
 
 	// create template pod & container
-	templatePodID, templateContainerID := createTemplateContainer(ctx, t, client, getTemplatePodConfig(), getTemplateContainerConfig())
+	templatePodID, templateContainerID := createTemplateContainer(ctx, t, client, getTemplatePodConfig("templatepod"), getTemplateContainerConfig("templatecontainer"))
 	defer removePodSandbox(t, client, ctx, templatePodID)
 	defer stopPodSandbox(t, client, ctx, templatePodID)
 	defer removeContainer(t, client, ctx, templateContainerID)
@@ -276,19 +265,15 @@ func DisabledTest_NormalContainerInClonedPod_WCOW(t *testing.T) {
 	client := newTestRuntimeClient(t)
 
 	// create template pod & container
-	templatePodID, templateContainerID := createTemplateContainer(ctx, t, client, getTemplatePodConfig(), getTemplateContainerConfig())
+	templatePodID, templateContainerID := createTemplateContainer(ctx, t, client, getTemplatePodConfig("templatepod"), getTemplateContainerConfig("templatecontainer"))
 	defer removePodSandbox(t, client, ctx, templatePodID)
 	defer stopPodSandbox(t, client, ctx, templatePodID)
 	defer removeContainer(t, client, ctx, templateContainerID)
 	defer stopContainer(t, client, ctx, templateContainerID)
 
 	// create a cloned pod and a cloned container
-	cloneSandboxRequest := getClonedPodConfig()
-	cloneSandboxRequest.Config.Metadata.Name = fmt.Sprintf("clonedPod-%d", 1)
-	cloneSandboxRequest.Config.Annotations["io.microsoft.virtualmachine.templateid"] = templatePodID + "@vm"
-	cloneContainerRequest := getClonedContainerConfig()
-	cloneContainerRequest.Config.Metadata.Name = fmt.Sprintf("clonedContainer-%d", 1)
-	cloneContainerRequest.Config.Annotations["io.microsoft.virtualmachine.templateid"] = templateContainerID
+	cloneSandboxRequest := getClonedPodConfig(1, templatePodID)
+	cloneContainerRequest := getClonedContainerConfig(1, templateContainerID)
 	clonedPodID, clonedContainerID := createPodAndContainer(ctx, t, client, cloneSandboxRequest, cloneContainerRequest)
 	defer removePodSandbox(t, client, ctx, clonedPodID)
 	defer stopPodSandbox(t, client, ctx, clonedPodID)
@@ -296,7 +281,7 @@ func DisabledTest_NormalContainerInClonedPod_WCOW(t *testing.T) {
 	defer stopContainer(t, client, ctx, clonedContainerID)
 
 	// create a normal container in cloned pod
-	stdContainerRequest := getStandardContainerConfig()
+	stdContainerRequest := getStandardContainerConfig("standard-container")
 	stdContainerRequest.PodSandboxId = clonedPodID
 	stdContainerRequest.SandboxConfig = cloneSandboxRequest.Config
 	stdContainerID := createContainer(t, client, ctx, stdContainerRequest)
@@ -319,7 +304,7 @@ func Test_CloneContainersWithClonedPodPool_WCOW(t *testing.T) {
 	pullRequiredImages(t, []string{imageWindowsNanoserver})
 
 	// create template pod & container
-	templatePodID, templateContainerID := createTemplateContainer(ctx, t, client, getTemplatePodConfig(), getTemplateContainerConfig())
+	templatePodID, templateContainerID := createTemplateContainer(ctx, t, client, getTemplatePodConfig("templatepod"), getTemplateContainerConfig("templatecontainer"))
 	defer removePodSandbox(t, client, ctx, templatePodID)
 	defer stopPodSandbox(t, client, ctx, templatePodID)
 	defer removeContainer(t, client, ctx, templateContainerID)
@@ -329,9 +314,7 @@ func Test_CloneContainersWithClonedPodPool_WCOW(t *testing.T) {
 	clonedPodIDs := []string{}
 	clonedSandboxRequests := []*runtime.RunPodSandboxRequest{}
 	for i := 0; i < nClones; i++ {
-		cloneSandboxRequest := getClonedPodConfig()
-		cloneSandboxRequest.Config.Metadata.Name = fmt.Sprintf("clonedPod-%d", i)
-		cloneSandboxRequest.Config.Annotations["io.microsoft.virtualmachine.templateid"] = templatePodID + "@vm"
+		cloneSandboxRequest := getClonedPodConfig(i, templatePodID)
 		clonedPodID := runPodSandbox(t, client, ctx, cloneSandboxRequest)
 		clonedPodIDs = append(clonedPodIDs, clonedPodID)
 		clonedSandboxRequests = append(clonedSandboxRequests, cloneSandboxRequest)
@@ -342,9 +325,7 @@ func Test_CloneContainersWithClonedPodPool_WCOW(t *testing.T) {
 	// create multiple clones
 	clonedContainers := []string{}
 	for i := 0; i < nClones; i++ {
-		cloneContainerRequest := getClonedContainerConfig()
-		cloneContainerRequest.Config.Metadata.Name = fmt.Sprintf("clonedContainer-%d", i)
-		cloneContainerRequest.Config.Annotations["io.microsoft.virtualmachine.templateid"] = templateContainerID
+		cloneContainerRequest := getClonedContainerConfig(i, templateContainerID)
 
 		cloneContainerRequest.PodSandboxId = clonedPodIDs[i]
 		cloneContainerRequest.SandboxConfig = clonedSandboxRequests[i].Config
@@ -370,7 +351,7 @@ func Test_ClonedContainerRunningAfterDeletingTemplate(t *testing.T) {
 
 	pullRequiredImages(t, []string{imageWindowsNanoserver})
 
-	templatePodID, templateContainerID := createTemplateContainer(ctx, t, client, getTemplatePodConfig(), getTemplateContainerConfig())
+	templatePodID, templateContainerID := createTemplateContainer(ctx, t, client, getTemplatePodConfig("templatepod"), getTemplateContainerConfig("templatecontainer"))
 
 	clonedPodID, clonedContainerID := createClonedContainer(ctx, t, client, templatePodID, templateContainerID, 1)
 	defer removePodSandbox(t, client, ctx, clonedPodID)
@@ -380,8 +361,44 @@ func Test_ClonedContainerRunningAfterDeletingTemplate(t *testing.T) {
 
 	stopPodSandbox(t, client, ctx, templatePodID)
 	removePodSandbox(t, client, ctx, templatePodID)
-	// TODO verify if template information is removed from the registry.
 
 	verifyContainerExec(ctx, t, client, clonedContainerID)
 
+}
+
+// A test to verify that multiple templats can be created and clones
+// can be made from each of them simultaneously.
+func Test_MultipleTemplateAndClones_WCOW(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := newTestRuntimeClient(t)
+	nTemplates := 3
+
+	pullRequiredImages(t, []string{imageWindowsNanoserver})
+
+	templatePodIDs := []string{}
+	templateContainerIDs := []string{}
+	for i := 0; i < nTemplates; i++ {
+		templatePodID, templateContainerID := createTemplateContainer(ctx, t, client, getTemplatePodConfig(fmt.Sprintf("templatepod-%d", i)), getTemplateContainerConfig(fmt.Sprintf("templatecontainer-%d", i)))
+		defer removePodSandbox(t, client, ctx, templatePodID)
+		defer stopPodSandbox(t, client, ctx, templatePodID)
+		defer removeContainer(t, client, ctx, templateContainerID)
+		defer stopContainer(t, client, ctx, templateContainerID)
+		templatePodIDs = append(templatePodIDs, templatePodID)
+		templateContainerIDs = append(templateContainerIDs, templateContainerID)
+	}
+
+	clonedContainerIDs := []string{}
+	for i := 0; i < nTemplates; i++ {
+		clonedPodID, clonedContainerID := createClonedContainer(ctx, t, client, templatePodIDs[i], templateContainerIDs[i], i)
+		defer removePodSandbox(t, client, ctx, clonedPodID)
+		defer stopPodSandbox(t, client, ctx, clonedPodID)
+		defer removeContainer(t, client, ctx, clonedContainerID)
+		defer stopContainer(t, client, ctx, clonedContainerID)
+		clonedContainerIDs = append(clonedContainerIDs, clonedContainerID)
+	}
+
+	for i := 0; i < nTemplates; i++ {
+		verifyContainerExec(ctx, t, client, clonedContainerIDs[i])
+	}
 }
