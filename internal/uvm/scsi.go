@@ -409,7 +409,7 @@ func (sm *SCSIMount) Clone(ctx context.Context, vm *UtilityVM, cd *CloneData) (i
 			return nil, err
 		}
 
-		if err = grantAccess(ctx, cd.UVMID, dstVhdPath, VMAccessTypeIndividual); err != nil {
+		if err = grantAccess(ctx, cd.uvmID, dstVhdPath, VMAccessTypeIndividual); err != nil {
 			os.Remove(dstVhdPath)
 			return nil, err
 		}
