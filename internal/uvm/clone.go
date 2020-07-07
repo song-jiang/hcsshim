@@ -41,7 +41,7 @@ type CloneData struct {
 	// scratchFolder of the clone
 	scratchFolder string
 	// UVMID of the clone
-	UVMID string
+	uvmID string
 }
 
 // UVMTemplateConfig is just a wrapper struct that keeps together all the resources that
