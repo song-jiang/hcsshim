@@ -261,7 +261,7 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 			_, err = cloneableResource.Clone(ctx, uvm, &CloneData{
 				doc:           doc,
 				scratchFolder: scratchFolder,
-				UVMID:         opts.ID,
+				uvmID:         opts.ID,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("failed while cloning: %s", err)
