@@ -121,6 +121,7 @@ func newHcsTask(
 	}).Debug("newHcsTask")
 
 	owner := filepath.Base(os.Args[0])
+	isTemplate := oci.ParseAnnotationsSaveAsTemplate(ctx, s)
 
 	io, err := cmd.NewNpipeIO(ctx, req.Stdin, req.Stdout, req.Stderr, req.Terminal)
 	if err != nil {
@@ -164,6 +165,124 @@ func newHcsTask(
 		req.Bundle,
 		ht.isWCOW,
 		s.Process,
+		io,
+		isTemplate)
+
+	if parent != nil {
+		// We have a parent UVM. Listen for its exit and forcibly close this
+		// task. This is not expected but in the event of a UVM crash we need to
+		// handle this case.
+		go ht.waitForHostExit()
+	}
+
+	// In the normal case the `Signal` call from the caller killed this task's
+	// init process. Or the init process ran to completion - this will mostly
+	// happen when we are creating a template and want to wait for init process
+	// to finish before we save the template. In such cases do not tear down the
+	// container after init exits - because we need the container in the template
+	go ht.waitInitExit(!isTemplate)
+
+	// Publish the created event
+	ht.events.publishEvent(
+		ctx,
+		runtime.TaskCreateEventTopic,
+		&eventstypes.TaskCreate{
+			ContainerID: req.ID,
+			Bundle:      req.Bundle,
+			Rootfs:      req.Rootfs,
+			IO: &eventstypes.TaskIO{
+				Stdin:    req.Stdin,
+				Stdout:   req.Stdout,
+				Stderr:   req.Stderr,
+				Terminal: req.Terminal,
+			},
+			Checkpoint: "",
+			Pid:        uint32(ht.init.Pid()),
+		})
+	return ht, nil
+}
+
+// newClonedTask creates a container within `parent`. The parent must be already cloned
+// from a template and hence this container must already be present inside that parent.
+// This function simply creates the go wrapper around the container that is already
+// running inside the cloned parent.
+// This task MAY own the UVM that it is running in but as of now the cloning feature is
+// only used for WCOW hyper-V isolated containers and for WCOW, the wcowPodSandboxTask
+// owns that UVM.
+func newClonedHcsTask(
+	ctx context.Context,
+	events publisher,
+	parent *uvm.UtilityVM,
+	ownsParent bool,
+	req *task.CreateTaskRequest,
+	s *specs.Spec,
+	templateID string) (_ shimTask, err error) {
+	log.G(ctx).WithFields(logrus.Fields{
+		"tid":        req.ID,
+		"ownsParent": ownsParent,
+		"templateid": templateID,
+	}).Debug("newClonedHcsTask")
+
+	owner := filepath.Base(os.Args[0])
+
+	if parent.OS() != "windows" {
+		return nil, fmt.Errorf("cloned task can only be created inside a windows host")
+	}
+
+	io, err := cmd.NewNpipeIO(ctx, req.Stdin, req.Stdout, req.Stderr, req.Terminal)
+	if err != nil {
+		return nil, err
+	}
+
+	var netNS string
+	if s.Windows != nil &&
+		s.Windows.Network != nil {
+		netNS = s.Windows.Network.NetworkNamespace
+	}
+
+	// Since this is a cloned task there is no need to actually add the layers
+	// that are specified in the spec (these resources must have already
+	// been allocated at the time of UVM cloning). Remove these resources from
+	// the spec here.
+	// Similarly, use the templateid as the ID of the container here because that's
+	// the ID of this container inside the UVM.
+	layerFolders := s.Windows.LayerFolders
+	s.Windows.LayerFolders = []string{}
+
+	opts := hcsoci.CreateOptions{
+		ID:               templateID,
+		Owner:            owner,
+		Spec:             s,
+		HostingSystem:    parent,
+		NetworkNamespace: netNS,
+	}
+	system, resources, err := hcsoci.CloneContainer(ctx, &opts)
+	if err != nil {
+		return nil, err
+	}
+	s.Windows.LayerFolders = layerFolders
+
+	ht := &hcsTask{
+		events:     events,
+		id:         req.ID,
+		isWCOW:     oci.IsWCOW(s),
+		c:          system,
+		cr:         resources,
+		ownsHost:   ownsParent,
+		host:       parent,
+		closed:     make(chan struct{}),
+		templateid: templateID,
+	}
+	ht.init = newClonedExec(
+		ctx,
+		events,
+		req.ID,
+		parent,
+		system,
+		req.ID,
+		req.Bundle,
+		ht.isWCOW,
+		s.Process,
 		io)
 
 	if parent != nil {
@@ -172,9 +291,10 @@ func newHcsTask(
 		// handle this case.
 		go ht.waitForHostExit()
 	}
+
 	// In the normal case the `Signal` call from the caller killed this task's
 	// init process.
-	go ht.waitInitExit()
+	go ht.waitInitExit(true)
 
 	// Publish the created event
 	ht.events.publishEvent(
@@ -251,6 +371,14 @@ type hcsTask struct {
 	// closeHostOnce is used to close `host`. This will only be used if
 	// `ownsHost==true` and `host != nil`.
 	closeHostOnce sync.Once
+
+	// templateid represents the id of the template container from which this container
+	// is cloned. The parent UVM (inside which this container is running) identifies this
+	// container with it's original id (i.e the id that was assigned to this container
+	// at the time of template creation i.e the templateid). Hence, every request that
+	// is sent to the GCS must actually use templateid to reference this container.
+	// A non-empty templateid specifies that this task was cloned.
+	templateid string
 }
 
 func (ht *hcsTask) ID() string {
@@ -275,7 +403,7 @@ func (ht *hcsTask) CreateExec(ctx context.Context, req *task.ExecProcessRequest,
 	if err != nil {
 		return err
 	}
-	he := newHcsExec(ctx, ht.events, ht.id, ht.host, ht.c, req.ExecID, ht.init.Status().Bundle, ht.isWCOW, spec, io)
+	he := newHcsExec(ctx, ht.events, ht.id, ht.host, ht.c, req.ExecID, ht.init.Status().Bundle, ht.isWCOW, spec, io, false)
 	ht.execs.Store(req.ExecID, he)
 
 	// Publish the created event
@@ -434,7 +562,7 @@ func (ht *hcsTask) Wait() *task.StateResponse {
 	return ht.init.Wait()
 }
 
-func (ht *hcsTask) waitInitExit() {
+func (ht *hcsTask) waitInitExit(destroyContainer bool) {
 	ctx, span := trace.StartSpan(context.Background(), "hcsTask::waitInitExit")
 	defer span.End()
 	span.AddAttributes(trace.StringAttribute("tid", ht.id))
@@ -442,8 +570,13 @@ func (ht *hcsTask) waitInitExit() {
 	// Wait for it to exit on its own
 	ht.init.Wait()
 
-	// Close the host and event the exit
-	ht.close(ctx)
+	if destroyContainer {
+		// Close the host and event the exit
+		ht.close(ctx)
+	} else {
+		// Only close the container without destroying it
+		ht.closeHost(ctx)
+	}
 }
 
 // waitForHostExit waits for the host virtual machine to exit. Once exited

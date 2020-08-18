@@ -228,6 +228,19 @@ func (p *pod) ID() string {
 	return p.id
 }
 
+func (p *pod) getCloneAnnotations(ctx context.Context, s *specs.Spec) (isTemplate bool, templateID string, err error) {
+	templateID = oci.ParseAnnotationsTemplateID(ctx, s)
+	isTemplate = oci.ParseAnnotationsSaveAsTemplate(ctx, s)
+	if templateID != "" && isTemplate {
+		return false, "", errors.Wrapf(errdefs.ErrInvalidArgument, "templateID and save as template flags can not be passed in the same request.")
+	}
+
+	if (isTemplate || templateID != "") && (p.host == nil || p.host.OS() != "windows") {
+		return false, "", errors.Wrapf(errdefs.ErrInvalidArgument, "save as template and creating clones is only available for WCOW.")
+	}
+	return
+}
+
 func (p *pod) CreateTask(ctx context.Context, req *task.CreateTaskRequest, s *specs.Spec) (_ shimTask, err error) {
 	if req.ID == p.id {
 		return nil, errors.Wrapf(errdefs.ErrAlreadyExists, "task with id: '%s' already exists", req.ID)
@@ -270,7 +283,17 @@ func (p *pod) CreateTask(ctx context.Context, req *task.CreateTaskRequest, s *sp
 			sid)
 	}
 
-	st, err := newHcsTask(ctx, p.events, p.host, false, req, s)
+	_, templateID, err := p.getCloneAnnotations(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+
+	var st shimTask
+	if templateID != "" {
+		st, err = newClonedHcsTask(ctx, p.events, p.host, false, req, s, templateID)
+	} else {
+		st, err = newHcsTask(ctx, p.events, p.host, false, req, s)
+	}
 	if err != nil {
 		return nil, err
 	}

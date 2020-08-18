@@ -111,6 +111,12 @@ func verifyOptions(ctx context.Context, options interface{}) error {
 		if opts.IsClone && opts.TemplateConfig == nil {
 			return errors.New("template config can not be nil when creating clone")
 		}
+		if opts.IsClone && !opts.ExternalGuestConnection {
+			return errors.New("External gcs connection can not be disabled for clones")
+		}
+		if opts.IsTemplate && opts.FullyPhysicallyBacked {
+			return errors.New("Template can not be created from a full physically backed UVM")
+		}
 	}
 	return nil
 }
@@ -193,7 +199,7 @@ func (uvm *UtilityVM) Close() (err error) {
 	}
 
 	if err := uvm.CloseGCSConnection(); err != nil {
-		log.G(ctx).Errorf("close gcs connection failed: %f", err)
+		log.G(ctx).Errorf("close GCS connection failed: %s", err)
 	}
 
 	// outputListener will only be nil for a Create -> Stop without a Start. In

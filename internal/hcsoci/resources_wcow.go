@@ -60,6 +60,29 @@ func allocateWindowsResources(ctx context.Context, coi *createOptionsInternal, r
 		r.SetLayers(layers)
 	}
 
+	if err := setupMounts(ctx, coi, r); err != nil {
+		return err
+	}
+
+	if cs, ok := coi.Spec.Windows.CredentialSpec.(string); ok {
+		// Only need to create a CCG instance for v2 containers
+		if schemaversion.IsV21(coi.actualSchemaVersion) {
+			hypervisorIsolated := coi.HostingSystem != nil
+			ccgState, ccgInstance, err := credentials.CreateCredentialGuard(ctx, coi.actualID, cs, hypervisorIsolated)
+			if err != nil {
+				return err
+			}
+			coi.ccgState = ccgState
+			r.Add(ccgInstance)
+			//TODO dcantah: If/when dynamic service table entries is supported register the RpcEndpoint with hvsocket here
+		}
+	}
+	return nil
+}
+
+// setupMount adds the custom mounts requested in the container configuration of this
+// request.
+func setupMounts(ctx context.Context, coi *createOptionsInternal, r *resources.Resources) error {
 	// Validate each of the mounts. If this is a V2 Xenon, we have to add them as
 	// VSMB shares to the utility VM. For V1 Xenon and Argons, there's nothing for
 	// us to do as it's done by HCS.
@@ -116,6 +139,9 @@ func allocateWindowsResources(ctx context.Context, coi *createOptionsInternal, r
 					l.Debug("hcsshim::allocateWindowsResources Hot-adding VSMB share for OCI mount")
 					options := coi.HostingSystem.DefaultVSMBOptions(readOnly)
 					share, err := coi.HostingSystem.AddVSMB(ctx, mount.Source, options)
+					if coi.HostingSystem.IsTemplate {
+						coi.HostingSystem.SetSaveableVSMBOptions(options, options.ReadOnly)
+					}
 					if err != nil {
 						return fmt.Errorf("failed to add VSMB share to utility VM for mount %+v: %s", mount, err)
 					}

@@ -61,15 +61,11 @@ type createOptionsInternal struct {
 	actualOwner            string             // Owner for the container
 	actualNetworkNamespace string
 	ccgState               *hcsschema.ContainerCredentialGuardState // Container Credential Guard information to be attached to HCS container document
+	isTemplate             bool                                     // Are we going to save this container as a template
+	templateID             string                                   // Template ID of the template from which this container is being cloned
 }
 
-// CreateContainer creates a container. It can cope with a  wide variety of
-// scenarios, including v1 HCS schema calls, as well as more complex v2 HCS schema
-// calls. Note we always return the resources that have been allocated, even in the
-// case of an error. This provides support for the debugging option not to
-// release the resources on failure, so that the client can make the necessary
-// call to release resources that have been allocated as part of calling this function.
-func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.Container, _ *resources.Resources, err error) {
+func initializeCreateOptions(ctx context.Context, createOptions *CreateOptions) (*createOptionsInternal, error) {
 	coi := &createOptionsInternal{
 		CreateOptions: createOptions,
 		actualID:      createOptions.ID,
@@ -80,7 +76,7 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 	if coi.actualID == "" {
 		g, err := guid.NewV4()
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		coi.actualID = g.String()
 	}
@@ -89,7 +85,7 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 	}
 
 	if coi.Spec == nil {
-		return nil, nil, fmt.Errorf("Spec must be supplied")
+		return nil, fmt.Errorf("Spec must be supplied")
 	}
 
 	if coi.HostingSystem != nil {
@@ -99,10 +95,61 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 		coi.actualSchemaVersion = schemaversion.DetermineSchemaVersion(coi.SchemaVersion)
 	}
 
+	coi.isTemplate = oci.ParseAnnotationsSaveAsTemplate(ctx, createOptions.Spec)
+	coi.templateID = oci.ParseAnnotationsTemplateID(ctx, createOptions.Spec)
+
 	log.G(ctx).WithFields(logrus.Fields{
 		"options": fmt.Sprintf("%+v", createOptions),
 		"schema":  coi.actualSchemaVersion,
-	}).Debug("hcsshim::CreateContainer")
+	}).Debug("hcsshim::initializeCreateOptions")
+
+	return coi, nil
+}
+
+// configureSandboxNetwork creates a new network namespace for the pod (sandbox)
+// if required and then adds that namespace to the pod.
+func configureSandboxNetwork(ctx context.Context, coi *createOptionsInternal, r *resources.Resources) error {
+	if coi.NetworkNamespace != "" {
+		r.SetNetNS(coi.NetworkNamespace)
+	} else {
+		err := createNetworkNamespace(ctx, coi, r)
+		if err != nil {
+			return err
+		}
+	}
+	coi.actualNetworkNamespace = r.NetNS()
+
+	if coi.HostingSystem != nil {
+		ct, _, err := oci.GetSandboxTypeAndID(coi.Spec.Annotations)
+		if err != nil {
+			return err
+		}
+		// Only add the network namespace to a standalone or sandbox
+		// container but not a workload container in a sandbox that inherits
+		// the namespace.
+		if ct == oci.KubernetesContainerTypeNone || ct == oci.KubernetesContainerTypeSandbox {
+			if err = SetupNetworkNamespace(ctx, coi.HostingSystem, coi.actualNetworkNamespace); err != nil {
+				return err
+			}
+			r.SetAddedNetNSToVM(true)
+		}
+	}
+
+	return nil
+}
+
+// CreateContainer creates a container. It can cope with a  wide variety of
+// scenarios, including v1 HCS schema calls, as well as more complex v2 HCS schema
+// calls. Note we always return the resources that have been allocated, even in the
+// case of an error. This provides support for the debugging option not to
+// release the resources on failure, so that the client can make the necessary
+// call to release resources that have been allocated as part of calling this function.
+func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.Container, _ *resources.Resources, err error) {
+
+	coi, err := initializeCreateOptions(ctx, createOptions)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	r := resources.NewContainerResources(createOptions.ID)
 	defer func() {
@@ -126,31 +173,10 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 	if coi.Spec.Windows != nil &&
 		coi.Spec.Windows.Network != nil &&
 		schemaversion.IsV21(coi.actualSchemaVersion) {
+		err = configureSandboxNetwork(ctx, coi, r)
+		if err != nil {
+			return nil, r, fmt.Errorf("failure while creating namespace for container: %s", err)
 
-		if coi.NetworkNamespace != "" {
-			r.SetNetNS(coi.NetworkNamespace)
-		} else {
-			err := createNetworkNamespace(ctx, coi, r)
-			if err != nil {
-				return nil, r, err
-			}
-		}
-		coi.actualNetworkNamespace = r.NetNS()
-		if coi.HostingSystem != nil {
-			ct, _, err := oci.GetSandboxTypeAndID(coi.Spec.Annotations)
-			if err != nil {
-				return nil, r, err
-			}
-			// Only add the network namespace to a standalone or sandbox
-			// container but not a workload container in a sandbox that inherits
-			// the namespace.
-			if ct == oci.KubernetesContainerTypeNone || ct == oci.KubernetesContainerTypeSandbox {
-				err = SetupNetworkNamespace(ctx, coi.HostingSystem, coi.actualNetworkNamespace)
-				if err != nil {
-					return nil, r, err
-				}
-				r.SetAddedNetNSToVM(true)
-			}
 		}
 	}
 
@@ -218,6 +244,60 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 		return nil, r, err
 	}
 	return system, r, nil
+}
+
+// CloneContainer is similar to CreateContainer but it does not add layers or namespace like
+// CreateContainer does. Also, instead of sending create container request it sends a modify
+// request to an existing container. CloneContainer only works for WCOW.
+func CloneContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.Container, _ *resources.Resources, err error) {
+	coi, err := initializeCreateOptions(ctx, createOptions)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if coi.Spec.Windows == nil || coi.HostingSystem == nil {
+		return nil, nil, fmt.Errorf("CloneContainer is only supported for Hyper-v isolated WCOW ")
+	}
+
+	r := resources.NewContainerResources(createOptions.ID)
+	defer func() {
+		if err != nil {
+			if !coi.DoNotReleaseResourcesOnFailure {
+				resources.ReleaseResources(ctx, r, coi.HostingSystem, true)
+			}
+		}
+	}()
+
+	if coi.HostingSystem != nil {
+		n := coi.HostingSystem.ContainerCounter()
+		if coi.Spec.Linux != nil {
+			r.SetContainerRootInUVM(fmt.Sprintf(lcowRootInUVM, createOptions.ID))
+		} else {
+			r.SetContainerRootInUVM(fmt.Sprintf(wcowRootInUVM, strconv.FormatUint(n, 16)))
+		}
+	}
+
+	if err = setupMounts(ctx, coi, r); err != nil {
+		return nil, r, err
+	}
+
+	mounts, err := createMountsConfig(ctx, coi)
+	if err != nil {
+		return nil, r, err
+	}
+
+	c, err := coi.HostingSystem.CloneContainer(ctx, coi.actualID)
+	if err != nil {
+		return nil, r, err
+	}
+
+	// Everything that is usually added to the container during the createContainer
+	// request (via the gcsDocument) must be hot added here.
+	if err := addMountsToClone(ctx, c, mounts); err != nil {
+		return nil, r, err
+	}
+
+	return c, r, nil
 }
 
 // isV2Xenon returns true if the create options are for a HCS schema V2 xenon container

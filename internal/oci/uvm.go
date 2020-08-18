@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	runhcsopts "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
+	"github.com/Microsoft/hcsshim/internal/clone"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
 	"github.com/Microsoft/hcsshim/internal/uvm"
@@ -128,6 +129,21 @@ const (
 	// HCS-GCS bridge. Default value is true which means external bridge will be used
 	// by default.
 	annotationUseExternalGCSBridge = "io.microsoft.virtualmachine.useexternalgcsbridge"
+
+	// SaveAsTemplate annotation must be used with a pod & container creation request.
+	// If this annotation is present in the request then it will save the UVM (pod)
+	// and the container(s) inside it as a template. However, this also means that this
+	// pod and the containers inside this pod will permananetly stay in the
+	// paused/templated state and can not be resumed again.
+	annotationSaveAsTemplate = "io.microsoft.virtualmachine.saveastemplate"
+
+	// This annotation should be used when creating a pod or a container from a template.
+	// When creating a pod from a template use the ID of the templated pod as the
+	// TemplateID and when creating a container use the ID of the templated container as
+	// the TemplateID. It is the client's responsibility to make sure that the sandbox
+	// within which a cloned container needs to be created must also be created from the
+	// same template.
+	annotationTemplateID = "io.microsoft.virtualmachine.templateid"
 )
 
 // parseAnnotationsBool searches `a` for `key` and if found verifies that the
@@ -318,6 +334,19 @@ func parseAnnotationsString(a map[string]string, key string, def string) string 
 	return def
 }
 
+// ParseAnnotationsSaveAsTemplate searches for the boolean value which specifies
+// if this create request should be considered as a template creation request. If value
+// is found the returns the actual value, returns false otherwise.
+func ParseAnnotationsSaveAsTemplate(ctx context.Context, s *specs.Spec) bool {
+	return parseAnnotationsBool(ctx, s.Annotations, annotationSaveAsTemplate, false)
+}
+
+// ParseAnnotationsTemplateID searches for the templateID in the create request. If the
+// value is found then returns the value otherwise returns the empty string.
+func ParseAnnotationsTemplateID(ctx context.Context, s *specs.Spec) string {
+	return parseAnnotationsString(s.Annotations, annotationTemplateID, "")
+}
+
 // handleAnnotationKernelDirectBoot handles parsing annotationKernelDirectBoot and setting
 // implied annotations from the result.
 func handleAnnotationKernelDirectBoot(ctx context.Context, a map[string]string, lopts *uvm.OptionsLCOW) {
@@ -357,6 +386,21 @@ func handleAnnotationFullyPhysicallyBacked(ctx context.Context, a map[string]str
 			options.AllowOvercommit = false
 		}
 	}
+}
+
+// handleCloneAnnotations handles parsing annotations related to template creation and cloning
+// Since late cloning is only supported for WCOW this function only deals with WCOW options.
+func handleCloneAnnotations(ctx context.Context, a map[string]string, wopts *uvm.OptionsWCOW) (err error) {
+	wopts.IsTemplate = parseAnnotationsBool(ctx, a, annotationSaveAsTemplate, false)
+	templateID := parseAnnotationsString(a, annotationTemplateID, "")
+	if templateID != "" {
+		wopts.TemplateConfig, err = clone.FetchTemplateConfig(ctx, templateID)
+		if err != nil {
+			return err
+		}
+		wopts.IsClone = true
+	}
+	return nil
 }
 
 // SpecToUVMCreateOpts parses `s` and returns either `*uvm.OptionsLCOW` or
@@ -406,6 +450,9 @@ func SpecToUVMCreateOpts(ctx context.Context, s *specs.Spec, id, owner string) (
 		wopts.StorageQoSIopsMaximum = ParseAnnotationsStorageIops(ctx, s, annotationStorageQoSIopsMaximum, wopts.StorageQoSIopsMaximum)
 		wopts.ExternalGuestConnection = parseAnnotationsBool(ctx, s.Annotations, annotationUseExternalGCSBridge, wopts.ExternalGuestConnection)
 		handleAnnotationFullyPhysicallyBacked(ctx, s.Annotations, wopts)
+		if err := handleCloneAnnotations(ctx, s.Annotations, wopts); err != nil {
+			return nil, err
+		}
 		return wopts, nil
 	}
 	return nil, errors.New("cannot create UVM opts spec is not LCOW or WCOW")

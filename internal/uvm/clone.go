@@ -2,7 +2,9 @@ package uvm
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/Microsoft/hcsshim/internal/cow"
 	hcsschema "github.com/Microsoft/hcsshim/internal/schema2"
 	"github.com/pkg/errors"
 )
@@ -31,7 +33,7 @@ type Cloneable interface {
 	Clone(ctx context.Context, vm *UtilityVM, cd *cloneData) (interface{}, error)
 }
 
-// cloneData contains all the information that might be required during cloning process of
+// A struct to keep all the information that might be required during cloning process of
 // a resource.
 type cloneData struct {
 	// doc spec for the clone
@@ -81,8 +83,8 @@ func (uvm *UtilityVM) GenerateTemplateConfig() *UVMTemplateConfig {
 
 // Pauses the uvm and then saves it as a template. This uvm can not be restarted or used
 // after it is successfully saved.
-// uvm must be in the paused state before we attempt to save it. save call will throw the
-// VM in incorrect state exception if it is not in the paused state at the time of saving.
+// uvm must be in the paused state before it can be saved as a template.save call will throw
+// an incorrect uvm state exception if uvm is not in the paused state at the time of saving.
 func (uvm *UtilityVM) SaveAsTemplate(ctx context.Context) error {
 	if err := uvm.hcsSystem.Pause(ctx); err != nil {
 		return errors.Wrap(err, "error pausing the VM")
@@ -92,4 +94,17 @@ func (uvm *UtilityVM) SaveAsTemplate(ctx context.Context) error {
 		return errors.Wrap(err, "error saving the VM")
 	}
 	return nil
+}
+
+// CloneContainer attaches back to a container that is already running inside the UVM
+// because of the clone
+func (uvm *UtilityVM) CloneContainer(ctx context.Context, id string) (cow.Container, error) {
+	if uvm.gc == nil {
+		return nil, fmt.Errorf("clone container cannot work without external GCS connection")
+	}
+	c, err := uvm.gc.CloneContainer(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to clone container %s: %s", id, err)
+	}
+	return c, nil
 }
