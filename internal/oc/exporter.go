@@ -34,9 +34,9 @@ func (le *LogrusExporter) ExportSpan(s *trace.SpanData) {
 	baseEntry.Data["name"] = s.Name
 	baseEntry.Time = s.StartTime
 
-	level := logrus.InfoLevel
+	//level := logrus.InfoLevel
 	if s.Status.Code != 0 {
-		level = logrus.ErrorLevel
+		//level = logrus.ErrorLevel
 		baseEntry.Data[logrus.ErrorKey] = s.Status.Message
 	}
 	// Disabled for Calico
