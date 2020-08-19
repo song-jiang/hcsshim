@@ -116,6 +116,26 @@ func (endpoint *HNSEndpoint) IsAttached(vID string) (bool, error) {
 
 }
 
+// The following code is added for Calico.
+// Some CNI plugins does not clear endpoint properly when a pod has been teared down.
+// This function can be used to determine if an endpoint is active or not.
+type endpointAttachContainersInfo struct {
+	SharedContainers []string `json:",omitempty"`
+}
+
+func (endpoint *HNSEndpoint) GetAttachedContainerIDs() ([]string, error) {
+	attachInfo := endpointAttachContainersInfo{}
+	err := hnsCall("GET", "/endpoints/"+endpoint.Id, "", &attachInfo)
+
+	// Return false allows us to just return the err
+	if err != nil {
+		return []string{}, err
+	}
+
+	return attachInfo.SharedContainers, nil
+}
+// The above code is added for Calico.
+
 // Create Endpoint by sending EndpointRequest to HNS. TODO: Create a separate HNS interface to place all these methods
 func (endpoint *HNSEndpoint) Create() (*HNSEndpoint, error) {
 	operation := "Create"
