@@ -127,9 +127,8 @@ func (endpoint *HNSEndpoint) GetAttachedContainerIDs() ([]string, error) {
 	attachInfo := endpointAttachContainersInfo{}
 	err := hnsCall("GET", "/endpoints/"+endpoint.Id, "", &attachInfo)
 
-	// Return false allows us to just return the err
 	if err != nil {
-		return []string{}, err
+		return nil, err
 	}
 
 	return attachInfo.SharedContainers, nil
